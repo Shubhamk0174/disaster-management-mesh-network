@@ -32,7 +32,7 @@ const char* HOME_WIFI_PASSWORD =
 // ============================================================
 
 const char* BACKEND_URL =
-  "https://vineyard-overlying-concrete.ngrok-free.dev/api/rescue-alert";
+  "https://ecs2-nu.vercel.app/api/rescue-alert";
 
 
 // ============================================================
