@@ -1,107 +1,281 @@
-
-/*
-  ============================================================================
-  RESCUE ALERT BACKEND - single file Express server
-  ============================================================================
-  Catches the JSON the rescue node POSTs to /api/rescue-alert, logs it,
-  stores it in memory, and returns a confirmation.
-
-  RUN IT:
-    npm init -y
-    npm install express
-    node server.js
-
-  Server listens on port 3000 by default (change PORT below or via env var).
-
-  In rescue_node.ino set:
-    BACKEND_URL = "http://<this-machine's-LAN-IP>:3000/api/rescue-alert";
-  (the rescue node ESP32 must be able to reach this machine over the network
-  it's connected to via HOME_WIFI_SSID - so run this server on a laptop/PC
-  or cloud host that's reachable from that same WiFi, or deploy it and use
-  its public URL instead.)
-  ============================================================================
-*/
-
 import express from 'express';
+import { env } from './config/env.js';
+import { supabase } from './config/db.js';
 
 const app = express();
-const PORT = 5500;
 
-// Parse JSON bodies (the rescue node sends Content-Type: application/json)
 app.use(express.json({ limit: '1mb' }));
 
-// In-memory store of every alert received - fine for a prototype,
-// swap for a real database (Mongo/Postgres/etc.) later.
-const alerts = [];
 
-// ---------------------------------------------------------------------------
-// Main endpoint the rescue node calls
-// ---------------------------------------------------------------------------
-app.post('/api/rescue-alert', (req, res) => {
+// ============================================================
+// POST /api/rescue-alert
+// Receives the simple ESP32 payload
+// ============================================================
+
+app.post('/api/rescue-alert', async (req, res) => {
+
   const payload = req.body;
 
-  // Basic shape validation - matches the JSON structure built by the nodes
-  const header = payload && payload.header;
-  const body = payload && payload.body;
+  console.log();
+  console.log('==================================================');
+  console.log('[BACKEND] RESCUE ALERT RECEIVED');
+  console.log('==================================================');
 
-  if (!header || !body) {
-    console.log('[REJECTED] Malformed payload:', JSON.stringify(payload));
-    return res.status(400).json({ status: 'error', message: 'Missing header or body' });
+  console.log(
+    '[BACKEND] Payload:',
+    JSON.stringify(payload)
+  );
+
+
+  // ----------------------------------------------------------
+  // Validate payload
+  // ----------------------------------------------------------
+
+  if (
+    !payload ||
+    !payload.node ||
+    !payload.message ||
+    !payload.location
+  ) {
+
+    console.log(
+      '[REJECTED] Malformed payload:',
+      JSON.stringify(payload)
+    );
+
+    return res.status(400).json({
+      status: 'error',
+      message: 'Missing node, message, or location'
+    });
   }
+
+
+  // ----------------------------------------------------------
+  // Create database record
+  // ----------------------------------------------------------
 
   const record = {
-    received_at_server: new Date().toISOString(),
-    origin_node_id: header.origin_node_id || null,
-    message_id: header.message_id || null,
-    timestamp_ms: header.timestamp_ms ?? null,
-    path: header.path || [],
-    received_at_rescue_node: header.received_at_rescue_node || null,
-    location: body.location || null,
-    address: body.address || null,
-    message: body.message || null,
+
+    // No message_id in the simple ESP32 payload
+    message_id: null,
+
+    origin_node_id:
+      payload.node,
+
+    timestamp_ms:
+      null,
+
+    path:
+      [payload.node],
+
+    location:
+      payload.location,
+
+    address:
+      payload.address || null,
+
+    message:
+      payload.message,
+
+    received_at_rescue_node:
+      null,
+
+    received_at_server:
+      new Date().toISOString()
   };
 
-  alerts.push(record);
 
-  console.log('--------------------------------------------------');
-  console.log('[ALERT RECEIVED]');
-  console.log(`  Origin node:   ${record.origin_node_id}`);
-  console.log(`  Message ID:    ${record.message_id}`);
-  console.log(`  Path:          ${record.path.join(' -> ')}`);
-  console.log(`  Location:      ${JSON.stringify(record.location)}`);
-  console.log(`  Address:       ${record.address}`);
-  console.log(`  Message:       ${record.message}`);
-  console.log(`  Rescue-node time: ${record.received_at_rescue_node}`);
-  console.log('--------------------------------------------------');
+  console.log(
+    '[BACKEND] Database record:',
+    JSON.stringify(record)
+  );
 
-  res.status(200).json({ status: 'ok', stored: true, alert_id: alerts.length - 1 });
-});
 
-// ---------------------------------------------------------------------------
-// Helper endpoints for the prototype - not required by the ESP32 code,
-// but handy for checking what's arrived without digging through logs.
-// ---------------------------------------------------------------------------
+  // ----------------------------------------------------------
+  // Insert into Supabase
+  // ----------------------------------------------------------
 
-// List every alert received so far
-app.get('/api/rescue-alert', (req, res) => {
-  res.status(200).json({ count: alerts.length, alerts });
-});
+  const {
+    data,
+    error
+  } = await supabase
+    .from('rescue_alerts')
+    .insert(record)
+    .select('id')
+    .single();
 
-// Fetch a single alert by its index
-app.get('/api/rescue-alert/:id', (req, res) => {
-  const alert = alerts[req.params.id];
-  if (!alert) {
-    return res.status(404).json({ status: 'error', message: 'Alert not found' });
+
+  if (error) {
+
+    console.error(
+      '[DB ERROR]',
+      error
+    );
+
+    return res.status(500).json({
+      status: 'error',
+      message: 'Failed to save alert',
+      error: error.message
+    });
   }
-  res.status(200).json(alert);
+
+
+  // ----------------------------------------------------------
+  // SUCCESS
+  // ----------------------------------------------------------
+
+  console.log('--------------------------------------------------');
+
+  console.log(
+    '[ALERT SAVED] ID:',
+    data.id
+  );
+
+  console.log(
+    'Origin node:',
+    record.origin_node_id
+  );
+
+  console.log(
+    'Location:',
+    JSON.stringify(record.location)
+  );
+
+  console.log(
+    'Address:',
+    record.address
+  );
+
+  console.log(
+    'Message:',
+    record.message
+  );
+
+  console.log('--------------------------------------------------');
+
+
+  const response = {
+
+    status: 'ok',
+
+    stored: true,
+
+    alert_id: data.id
+  };
+
+
+  console.log(
+    '[ALERT RESPONSE]',
+    JSON.stringify(response)
+  );
+
+
+  return res
+    .status(200)
+    .json(response);
 });
 
-// Simple health check
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', uptime_seconds: process.uptime() });
+
+// ============================================================
+// GET /api/rescue-alert
+// List alerts
+// ============================================================
+
+app.get('/api/rescue-alert', async (_req, res) => {
+
+  const {
+    data,
+    error
+  } = await supabase
+    .from('rescue_alerts')
+    .select('*')
+    .order(
+      'received_at_server',
+      {
+        ascending: false
+      }
+    );
+
+
+  if (error) {
+
+    return res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
+
+
+  return res.status(200).json({
+    count: data.length,
+    alerts: data
+  });
 });
 
-app.listen(PORT, () => {
-  console.log(`Rescue alert backend listening on port ${PORT}`);
-  console.log(`POST alerts to: http://<this-machine-ip>:${PORT}/api/rescue-alert`);
+
+// ============================================================
+// GET /api/rescue-alert/:id
+// Get one alert
+// ============================================================
+
+app.get(
+  '/api/rescue-alert/:id',
+  async (req, res) => {
+
+    const {
+      data,
+      error
+    } = await supabase
+      .from('rescue_alerts')
+      .select('*')
+      .eq(
+        'id',
+        req.params.id
+      )
+      .single();
+
+
+    if (error || !data) {
+
+      return res.status(404).json({
+        status: 'error',
+        message: 'Alert not found'
+      });
+    }
+
+
+    return res.status(200).json(data);
+  }
+);
+
+
+// ============================================================
+// HEALTH
+// ============================================================
+
+app.get('/health', (_req, res) => {
+
+  res.status(200).json({
+    status: 'ok',
+    uptime_seconds: process.uptime()
+  });
 });
+
+
+// ============================================================
+// START SERVER
+// ============================================================
+
+app.listen(
+  env.PORT,
+  () => {
+
+    console.log(
+      `Rescue alert backend listening on port ${env.PORT}`
+    );
+
+    console.log(
+      `POST alerts to /api/rescue-alert`
+    );
+  }
+);

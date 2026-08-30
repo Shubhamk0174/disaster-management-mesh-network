@@ -56,7 +56,7 @@ const char* MESH_PASSWORD    = "mesh12345";   // WiFi password for every node's 
 const char* NODE_SSID_PREFIX = "NODE_";       // used to recognize other mesh nodes
 const char* RESCUE_SSID      = "RESCUE_NODE"; // exact SSID broadcast by the rescue node
 
-const unsigned long SEND_INTERVAL_MS      = 10UL * 60UL * 1000UL; // 10 minutes
+const unsigned long SEND_INTERVAL_MS      = 5UL * 1000UL; // 5 s
 const int            WIFI_CONNECT_TIMEOUT_MS = 8000;
 
 WebServer server(80);
@@ -113,6 +113,7 @@ void forwardToNearestNode(JsonDocument &doc) {
 
   int bestIndex = -1;
   int bestRSSI  = -1000;
+  String bestSSID = ""; // capture the SSID text itself while scan results are still valid
   JsonArray path = doc["header"]["path"];
 
   for (int i = 0; i < n; i++) {
@@ -135,16 +136,17 @@ void forwardToNearestNode(JsonDocument &doc) {
     if (rssi > bestRSSI) {
       bestRSSI  = rssi;
       bestIndex = i;
+      bestSSID  = ssid; // save it NOW, not after scanDelete()
     }
   }
-  WiFi.scanDelete();
+  WiFi.scanDelete(); // safe to clear scan results now - we already saved bestSSID
 
   if (bestIndex == -1) {
     Serial.println("[MESH] No reachable node found right now. Will try again next cycle.");
     return;
   }
 
-  String targetSSID = WiFi.SSID(bestIndex);
+  String targetSSID = bestSSID; // no longer read from WiFi.SSID() after deletion
   Serial.print("[MESH] Nearest node found: ");
   Serial.print(targetSSID);
   Serial.print("   (signal strength RSSI: ");
