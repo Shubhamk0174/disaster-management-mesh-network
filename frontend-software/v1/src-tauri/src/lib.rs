@@ -90,7 +90,7 @@ pub struct UpdateRescueRequestPayload {
 /// POSTs a new rescue request to the backend.
 /// Returns the created DB record (with the backend-assigned integer id).
 #[tauri::command]
-pub async fn save_rescue_request(
+async fn save_rescue_request(
     payload: SaveRescueRequestPayload,
 ) -> Result<DbRescueRequest, String> {
     let client = reqwest::Client::new();
@@ -118,7 +118,7 @@ pub async fn save_rescue_request(
 /// PATCHes an existing rescue request's status and/or notes.
 /// Returns the updated DB record.
 #[tauri::command]
-pub async fn update_rescue_request(
+async fn update_rescue_request(
     id: i64,
     status: Option<String>,
     notes: Option<String>,
@@ -149,7 +149,7 @@ pub async fn update_rescue_request(
 
 /// GETs all rescue requests from the backend (ordered by receivedAt asc).
 #[tauri::command]
-pub async fn load_rescue_requests() -> Result<Vec<DbRescueRequest>, String> {
+async fn load_rescue_requests() -> Result<Vec<DbRescueRequest>, String> {
     let client = reqwest::Client::new();
     let url = format!("{}/api/rescue-request", BACKEND_URL);
 

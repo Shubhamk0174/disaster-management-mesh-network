@@ -21,8 +21,27 @@ interface LogEntry {
 
 type RequestStatus = "unmarked" | "solved" | "unresolved";
 
-interface RescueRequest {
+// DB record shape returned by Tauri backend commands
+interface DbRescueRequest {
   id: number;
+  receivedAt: string;
+  originNode: string;
+  location: string;
+  deviceTimestamp: string;
+  rssi: number | null;
+  originRoot: string;
+  finalRoot: string;
+  hopCount: number | null;
+  encryption: string;
+  auth: string;
+  status: string;
+  notes: string;
+  createdAt: string;
+}
+
+interface RescueRequest {
+  id: number;               // local display id (incremented in-session)
+  dbId: number | null;      // backend DB row id, set after successful POST
   receivedAt: number;        // unix ms (from serial event timestamp)
   originNode: string;        // e.g. "NODE_A"
   location: string;
@@ -82,6 +101,7 @@ function parsePairLine(line: string): [string, string] | null {
 function buildRequest(lines: string[], timestamp: number): RescueRequest {
   const req: RescueRequest = {
     id: ++globalRequestId,
+    dbId: null,               // will be set after backend POST succeeds
     receivedAt: timestamp,
     originNode: "UNKNOWN",
     location: "—",
@@ -92,7 +112,7 @@ function buildRequest(lines: string[], timestamp: number): RescueRequest {
     hopCount: null,
     encryption: "—",
     auth: "—",
-    status: "unmarked",
+    status: "unresolved",     // saved as unresolved immediately
     notes: "",
   };
 
@@ -352,8 +372,10 @@ function App() {
     pendingTimestamp: 0,
   });
 
-  const consoleRef   = useRef<HTMLDivElement>(null);
-  const unlistenRef  = useRef<UnlistenFn[]>([]);
+  const consoleRef        = useRef<HTMLDivElement>(null);
+  const unlistenRef       = useRef<UnlistenFn[]>([]);
+  // Debounce timers for notes PATCH — keyed by local request id
+  const notesDebounceRef  = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
 
   // ── Load ports ──────────────────────────────────────────────────
   const refreshPorts = useCallback(async () => {
@@ -369,6 +391,31 @@ function App() {
   }, [selectedPort]);
 
   useEffect(() => { refreshPorts(); }, []);
+
+  // ── Load rescue history from DB on startup ───────────────────────
+  useEffect(() => {
+    invoke<DbRescueRequest[]>("load_rescue_requests")
+      .then((records) => {
+        const loaded: RescueRequest[] = records.map((r) => ({
+          id: ++globalRequestId,
+          dbId: r.id,
+          receivedAt: new Date(r.receivedAt).getTime(),
+          originNode: r.originNode,
+          location: r.location,
+          deviceTimestamp: r.deviceTimestamp,
+          rssi: r.rssi ?? null,
+          originRoot: r.originRoot,
+          finalRoot: r.finalRoot,
+          hopCount: r.hopCount ?? null,
+          encryption: r.encryption,
+          auth: r.auth,
+          status: r.status as RequestStatus,
+          notes: r.notes,
+        }));
+        setRequests(loaded);
+      })
+      .catch((e) => console.error("[DB] Failed to load rescue requests:", e));
+  }, []);
 
   // ── Auto-scroll ──────────────────────────────────────────────────
   useEffect(() => {
@@ -421,11 +468,35 @@ function App() {
 
     if (ps.phase === "accumulating") {
       if (trimmed.startsWith("===")) {
-        // Closing divider — emit the card
+        // Closing divider — build card and optimistically add to UI
         const req = buildRequest(ps.pendingLines, ps.pendingTimestamp);
         setRequests((prev) => [req, ...prev]);
         ps.phase = "idle";
         ps.pendingLines = [];
+
+        // Fire-and-forget POST to backend; update dbId when it comes back
+        invoke<DbRescueRequest>("save_rescue_request", {
+          payload: {
+            receivedAt: new Date(req.receivedAt).toISOString(),
+            originNode: req.originNode,
+            location: req.location,
+            deviceTimestamp: req.deviceTimestamp,
+            rssi: req.rssi,
+            originRoot: req.originRoot,
+            finalRoot: req.finalRoot,
+            hopCount: req.hopCount,
+            encryption: req.encryption,
+            auth: req.auth,
+            status: "unresolved",
+            notes: "",
+          },
+        })
+          .then((saved) => {
+            setRequests((prev) =>
+              prev.map((r) => (r.id === req.id ? { ...r, dbId: saved.id } : r))
+            );
+          })
+          .catch((e) => console.error("[DB] Failed to save rescue request:", e));
       } else {
         ps.pendingLines.push(trimmed);
       }
@@ -511,15 +582,32 @@ function App() {
 
   // ── Status mutation helpers ────────────────────────────────────────
   const setRequestStatus = (id: number, status: RequestStatus) => {
-    setRequests((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, status } : r))
-    );
+    setRequests((prev) => {
+      const req = prev.find((r) => r.id === id);
+      if (req?.dbId != null) {
+        // Immediately PATCH the DB
+        invoke("update_rescue_request", { id: req.dbId, status })
+          .catch((e) => console.error("[DB] Failed to update status:", e));
+      }
+      return prev.map((r) => (r.id === id ? { ...r, status } : r));
+    });
   };
 
   const setRequestNotes = (id: number, notes: string) => {
-    setRequests((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, notes } : r))
-    );
+    setRequests((prev) => {
+      const req = prev.find((r) => r.id === id);
+      if (req?.dbId != null) {
+        const dbId = req.dbId;
+        // Debounced PATCH — 500 ms after last keystroke
+        if (notesDebounceRef.current[id]) clearTimeout(notesDebounceRef.current[id]);
+        notesDebounceRef.current[id] = setTimeout(() => {
+          invoke("update_rescue_request", { id: dbId, notes })
+            .catch((e) => console.error("[DB] Failed to update notes:", e));
+          delete notesDebounceRef.current[id];
+        }, 500);
+      }
+      return prev.map((r) => (r.id === id ? { ...r, notes } : r));
+    });
   };
 
   // ── Derived state ──────────────────────────────────────────────────
@@ -851,6 +939,9 @@ interface RequestCardProps {
 }
 
 function RequestCard({ req, onStatusChange, onNotesChange }: RequestCardProps) {
+  // New cards arrive expanded so the operator sees data immediately
+  const [isExpanded, setIsExpanded] = useState(true);
+
   const badgeClass =
     req.status === "solved"     ? "badge-solved" :
     req.status === "unresolved" ? "badge-unresolved" :
@@ -861,113 +952,151 @@ function RequestCard({ req, onStatusChange, onNotesChange }: RequestCardProps) {
     req.status === "unresolved" ? "Unresolved" :
                                   "Unmarked";
 
-  return (
-    <div className={`request-card status-${req.status}`}>
+  const rssiPillClass =
+    req.rssi === null  ? "" :
+    req.rssi >= -60    ? "rssi-good" :
+    req.rssi >= -80    ? "rssi-ok" :
+                         "rssi-weak";
 
-      {/* Header row */}
-      <div className="card-header">
+  return (
+    <div className={`request-card status-${req.status}${isExpanded ? " expanded" : ""}`}>
+
+      {/* ── Clickable header (toggle) ── */}
+      <div
+        className="card-header"
+        onClick={() => setIsExpanded((v) => !v)}
+        role="button"
+        aria-expanded={isExpanded}
+        tabIndex={0}
+        onKeyDown={(e) => e.key === "Enter" || e.key === " " ? setIsExpanded((v) => !v) : undefined}
+      >
         <div className="card-id-block">
           <span className="card-id">Request #{req.id}</span>
           <span className="card-ts">{formatTimeShort(req.receivedAt)}</span>
         </div>
-        <span className="card-node-badge">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M6 9a6 6 0 0 1 12 0"/>
-            <path d="M3 5.5a11 11 0 0 1 18 0"/>
-            <line x1="12" y1="9" x2="12" y2="22"/>
-            <line x1="9" y1="22" x2="15" y2="22"/>
-          </svg>
-          {req.originNode}
-        </span>
+
+        <div className="card-header-meta">
+          <span className="card-node-badge">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6 9a6 6 0 0 1 12 0"/>
+              <path d="M3 5.5a11 11 0 0 1 18 0"/>
+              <line x1="12" y1="9" x2="12" y2="22"/>
+              <line x1="9" y1="22" x2="15" y2="22"/>
+            </svg>
+            {req.originNode}
+          </span>
+
+          {req.rssi !== null && (
+            <span className={`card-rssi-pill ${rssiPillClass}`}>
+              {req.rssi} dBm
+            </span>
+          )}
+        </div>
+
         <span className={`status-badge ${badgeClass}`}>{badgeLabel}</span>
+
+        {/* Chevron */}
+        <span className="card-chevron" aria-hidden="true">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </span>
       </div>
 
-      {/* Field grid */}
-      <div className="card-fields">
-        {/* Location — full width */}
-        <div className="card-field full-width">
-          <span className="field-label">Location</span>
-          <span className="field-value location-val">{req.location}</span>
+      {/* ── Collapsible body ── */}
+      <div className="card-body">
+        <div className="card-body-inner">
+
+          {/* Field grid */}
+          <div className="card-fields">
+            {/* Location — full width */}
+            <div className="card-field full-width">
+              <span className="field-label">Location</span>
+              <span className="field-value location-val">{req.location}</span>
+            </div>
+
+            <div className="card-field">
+              <span className="field-label">RSSI</span>
+              <span className={`field-value ${rssiClass(req.rssi)}`}>
+                {req.rssi !== null ? `${req.rssi} dBm` : "—"}
+              </span>
+            </div>
+
+            <div className="card-field">
+              <span className="field-label">Hop Count</span>
+              <span className="field-value">
+                {req.hopCount !== null ? req.hopCount : "—"}
+              </span>
+            </div>
+
+            <div className="card-field full-width">
+              <span className="field-label">Device Timestamp</span>
+              <span className="field-value">{req.deviceTimestamp}</span>
+            </div>
+
+            <div className="card-field">
+              <span className="field-label">Origin Root</span>
+              <span className="field-value">{req.originRoot}</span>
+            </div>
+
+            <div className="card-field">
+              <span className="field-label">Final Root</span>
+              <span className="field-value">{req.finalRoot}</span>
+            </div>
+
+            <div className="card-field">
+              <span className="field-label">Encryption</span>
+              <span className="field-value">{req.encryption}</span>
+            </div>
+
+            <div className="card-field">
+              <span className="field-label">Auth</span>
+              <span className="field-value">{req.auth}</span>
+            </div>
+          </div>
+
+          {/* Status action buttons */}
+          <div className="card-actions">
+            <span className="action-label">Mark:</span>
+            <button
+              id={`btn-solved-${req.id}`}
+              className={`btn-action btn-solved ${req.status === "solved" ? "active-action" : ""}`}
+              onClick={(e) => { e.stopPropagation(); onStatusChange(req.status === "solved" ? "unmarked" : "solved"); }}
+            >
+              {Icons.check} Solved
+            </button>
+            <button
+              id={`btn-unresolved-${req.id}`}
+              className={`btn-action btn-unresolved ${req.status === "unresolved" ? "active-action" : ""}`}
+              onClick={(e) => { e.stopPropagation(); onStatusChange(req.status === "unresolved" ? "unmarked" : "unresolved"); }}
+            >
+              {Icons.xCircle} Unresolved
+            </button>
+            {req.status !== "unmarked" && (
+              <button
+                id={`btn-unmarked-${req.id}`}
+                className="btn-action btn-unmarked"
+                onClick={(e) => { e.stopPropagation(); onStatusChange("unmarked"); }}
+              >
+                {Icons.minus} Reset
+              </button>
+            )}
+          </div>
+
+          {/* Operator notes */}
+          <div className="card-notes">
+            <textarea
+              id={`notes-${req.id}`}
+              className="notes-textarea"
+              placeholder="Operator notes… (e.g. dispatched unit B3 at 14:02)"
+              value={req.notes}
+              onChange={(e) => onNotesChange(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              rows={2}
+            />
+          </div>
+
         </div>
-
-        <div className="card-field">
-          <span className="field-label">RSSI</span>
-          <span className={`field-value ${rssiClass(req.rssi)}`}>
-            {req.rssi !== null ? `${req.rssi} dBm` : "—"}
-          </span>
-        </div>
-
-        <div className="card-field">
-          <span className="field-label">Hop Count</span>
-          <span className="field-value">
-            {req.hopCount !== null ? req.hopCount : "—"}
-          </span>
-        </div>
-
-        <div className="card-field full-width">
-          <span className="field-label">Device Timestamp</span>
-          <span className="field-value">{req.deviceTimestamp}</span>
-        </div>
-
-        <div className="card-field">
-          <span className="field-label">Origin Root</span>
-          <span className="field-value">{req.originRoot}</span>
-        </div>
-
-        <div className="card-field">
-          <span className="field-label">Final Root</span>
-          <span className="field-value">{req.finalRoot}</span>
-        </div>
-
-        <div className="card-field">
-          <span className="field-label">Encryption</span>
-          <span className="field-value">{req.encryption}</span>
-        </div>
-
-        <div className="card-field">
-          <span className="field-label">Auth</span>
-          <span className="field-value">{req.auth}</span>
-        </div>
-      </div>
-
-      {/* Status action buttons */}
-      <div className="card-actions">
-        <span className="action-label">Mark:</span>
-        <button
-          id={`btn-solved-${req.id}`}
-          className={`btn-action btn-solved ${req.status === "solved" ? "active-action" : ""}`}
-          onClick={() => onStatusChange(req.status === "solved" ? "unmarked" : "solved")}
-        >
-          {Icons.check} Solved
-        </button>
-        <button
-          id={`btn-unresolved-${req.id}`}
-          className={`btn-action btn-unresolved ${req.status === "unresolved" ? "active-action" : ""}`}
-          onClick={() => onStatusChange(req.status === "unresolved" ? "unmarked" : "unresolved")}
-        >
-          {Icons.xCircle} Unresolved
-        </button>
-        {req.status !== "unmarked" && (
-          <button
-            id={`btn-unmarked-${req.id}`}
-            className="btn-action btn-unmarked"
-            onClick={() => onStatusChange("unmarked")}
-          >
-            {Icons.minus} Reset
-          </button>
-        )}
-      </div>
-
-      {/* Operator notes */}
-      <div className="card-notes">
-        <textarea
-          id={`notes-${req.id}`}
-          className="notes-textarea"
-          placeholder="Operator notes… (e.g. dispatched unit B3 at 14:02)"
-          value={req.notes}
-          onChange={(e) => onNotesChange(e.target.value)}
-          rows={2}
-        />
       </div>
     </div>
   );

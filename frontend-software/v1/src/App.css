@@ -500,6 +500,7 @@ body {
   width: 410px;
   min-width: 320px;
   flex-shrink: 0;
+  min-height: 0;
   border-right: 1px solid var(--border-dark);
   background: var(--bg);
   overflow: hidden;
@@ -612,6 +613,7 @@ body {
   border: 1px solid var(--border);
   border-left: 3px solid var(--border-dark);
   border-radius: var(--radius-md);
+  flex-shrink: 0;
   overflow: hidden;
   box-shadow: var(--shadow-sm);
   transition: box-shadow 0.18s var(--ease), transform 0.18s var(--ease);
@@ -629,14 +631,74 @@ body {
 .request-card.status-unresolved { border-left-color: var(--unresolved); }
 .request-card.status-unmarked   { border-left-color: var(--unmarked); }
 
-/* Card Header */
+/* Card Header — clickable toggle */
 .card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 10px 12px 9px;
-  border-bottom: 1px solid var(--border);
   gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s var(--ease);
+}
+
+.request-card.expanded .card-header {
+  border-bottom: 1px solid var(--border);
+}
+
+.card-header:hover { background: rgba(0,0,0,0.025); }
+
+.card-chevron {
+  margin-left: auto;
+  color: var(--charcoal-soft);
+  flex-shrink: 0;
+  transition: transform 0.22s var(--ease);
+  display: flex;
+  align-items: center;
+}
+
+.request-card.expanded .card-chevron {
+  transform: rotate(180deg);
+}
+
+/* Collapsed quick-stats row */
+.card-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.card-rssi-pill {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--border);
+  color: var(--charcoal-mid);
+  flex-shrink: 0;
+}
+
+.card-rssi-pill.rssi-good { background: var(--solved-bg);     color: var(--solved); }
+.card-rssi-pill.rssi-ok   { background: rgba(234,179,8,0.12); color: var(--warn); }
+.card-rssi-pill.rssi-weak { background: var(--unresolved-bg); color: var(--unresolved); }
+
+/* Collapsible body — grid trick for smooth height animation */
+.card-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.24s var(--ease);
+}
+
+.request-card.expanded .card-body {
+  grid-template-rows: 1fr;
+}
+
+.card-body-inner {
+  overflow: hidden;
 }
 
 .card-id-block { display: flex; flex-direction: column; gap: 1px; }
