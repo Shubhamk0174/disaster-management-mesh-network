@@ -46,3 +46,8 @@ export { Prisma }
  * 
  */
 export type NodeLocation = Prisma.NodeLocationModel
+/**
+ * Model RescueRequest
+ * 
+ */
+export type RescueRequest = Prisma.RescueRequestModel

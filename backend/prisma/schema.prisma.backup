@@ -1,0 +1,17 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model NodeLocation {
+  id        Int      @id @default(autoincrement())
+  node_id   String
+  timestamp DateTime
+  latitude  Float
+  longitude Float
+  createdAt DateTime @default(now())
+}

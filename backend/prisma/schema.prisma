@@ -15,3 +15,20 @@ model NodeLocation {
   longitude Float
   createdAt DateTime @default(now())
 }
+
+model RescueRequest {
+  id              Int      @id @default(autoincrement())
+  receivedAt      DateTime
+  originNode      String
+  location        String
+  deviceTimestamp String
+  rssi            Int?
+  originRoot      String
+  finalRoot       String
+  hopCount        Int?
+  encryption      String
+  auth            String
+  status          String   @default("unresolved")
+  notes           String   @default("")
+  createdAt       DateTime @default(now())
+}
