@@ -9,4 +9,5 @@
  * 🟢 You can import this file directly.
  */
 export type * from './models/NodeLocation'
+export type * from './models/RescueRequest'
 export type * from './commonInputTypes'

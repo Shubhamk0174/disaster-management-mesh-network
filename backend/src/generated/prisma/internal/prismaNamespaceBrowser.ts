@@ -51,7 +51,8 @@ export const AnyNull = runtime.AnyNull
 
 
 export const ModelName = {
-  NodeLocation: 'NodeLocation'
+  NodeLocation: 'NodeLocation',
+  RescueRequest: 'RescueRequest'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -82,6 +83,26 @@ export const NodeLocationScalarFieldEnum = {
 export type NodeLocationScalarFieldEnum = (typeof NodeLocationScalarFieldEnum)[keyof typeof NodeLocationScalarFieldEnum]
 
 
+export const RescueRequestScalarFieldEnum = {
+  id: 'id',
+  receivedAt: 'receivedAt',
+  originNode: 'originNode',
+  location: 'location',
+  deviceTimestamp: 'deviceTimestamp',
+  rssi: 'rssi',
+  originRoot: 'originRoot',
+  finalRoot: 'finalRoot',
+  hopCount: 'hopCount',
+  encryption: 'encryption',
+  auth: 'auth',
+  status: 'status',
+  notes: 'notes',
+  createdAt: 'createdAt'
+} as const
+
+export type RescueRequestScalarFieldEnum = (typeof RescueRequestScalarFieldEnum)[keyof typeof RescueRequestScalarFieldEnum]
+
+
 export const SortOrder = {
   asc: 'asc',
   desc: 'desc'
@@ -96,4 +117,12 @@ export const QueryMode = {
 } as const
 
 export type QueryMode = (typeof QueryMode)[keyof typeof QueryMode]
+
+
+export const NullsOrder = {
+  first: 'first',
+  last: 'last'
+} as const
+
+export type NullsOrder = (typeof NullsOrder)[keyof typeof NullsOrder]
 

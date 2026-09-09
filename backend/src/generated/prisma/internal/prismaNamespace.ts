@@ -397,7 +397,8 @@ type FieldRefInputType<Model, FieldType> = Model extends never ? never : FieldRe
 
 
 export const ModelName = {
-  NodeLocation: 'NodeLocation'
+  NodeLocation: 'NodeLocation',
+  RescueRequest: 'RescueRequest'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -413,7 +414,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "nodeLocation"
+    modelProps: "nodeLocation" | "rescueRequest"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -491,6 +492,80 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         }
       }
     }
+    RescueRequest: {
+      payload: Prisma.$RescueRequestPayload<ExtArgs>
+      fields: Prisma.RescueRequestFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.RescueRequestFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$RescueRequestPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.RescueRequestFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$RescueRequestPayload>
+        }
+        findFirst: {
+          args: Prisma.RescueRequestFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$RescueRequestPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.RescueRequestFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$RescueRequestPayload>
+        }
+        findMany: {
+          args: Prisma.RescueRequestFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$RescueRequestPayload>[]
+        }
+        create: {
+          args: Prisma.RescueRequestCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$RescueRequestPayload>
+        }
+        createMany: {
+          args: Prisma.RescueRequestCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.RescueRequestCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$RescueRequestPayload>[]
+        }
+        delete: {
+          args: Prisma.RescueRequestDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$RescueRequestPayload>
+        }
+        update: {
+          args: Prisma.RescueRequestUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$RescueRequestPayload>
+        }
+        deleteMany: {
+          args: Prisma.RescueRequestDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.RescueRequestUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.RescueRequestUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$RescueRequestPayload>[]
+        }
+        upsert: {
+          args: Prisma.RescueRequestUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$RescueRequestPayload>
+        }
+        aggregate: {
+          args: Prisma.RescueRequestAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateRescueRequest>
+        }
+        groupBy: {
+          args: Prisma.RescueRequestGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.RescueRequestGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.RescueRequestCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.RescueRequestCountAggregateOutputType> | number
+        }
+      }
+    }
   }
 } & {
   other: {
@@ -542,6 +617,26 @@ export const NodeLocationScalarFieldEnum = {
 export type NodeLocationScalarFieldEnum = (typeof NodeLocationScalarFieldEnum)[keyof typeof NodeLocationScalarFieldEnum]
 
 
+export const RescueRequestScalarFieldEnum = {
+  id: 'id',
+  receivedAt: 'receivedAt',
+  originNode: 'originNode',
+  location: 'location',
+  deviceTimestamp: 'deviceTimestamp',
+  rssi: 'rssi',
+  originRoot: 'originRoot',
+  finalRoot: 'finalRoot',
+  hopCount: 'hopCount',
+  encryption: 'encryption',
+  auth: 'auth',
+  status: 'status',
+  notes: 'notes',
+  createdAt: 'createdAt'
+} as const
+
+export type RescueRequestScalarFieldEnum = (typeof RescueRequestScalarFieldEnum)[keyof typeof RescueRequestScalarFieldEnum]
+
+
 export const SortOrder = {
   asc: 'asc',
   desc: 'desc'
@@ -556,6 +651,14 @@ export const QueryMode = {
 } as const
 
 export type QueryMode = (typeof QueryMode)[keyof typeof QueryMode]
+
+
+export const NullsOrder = {
+  first: 'first',
+  last: 'last'
+} as const
+
+export type NullsOrder = (typeof NullsOrder)[keyof typeof NullsOrder]
 
 
 
@@ -771,6 +874,7 @@ export interface PrismaClientOptionsWithAdapter extends PrismaClientBaseOptions 
 export type PrismaClientOptions = PrismaClientOptionsWithAccelerateUrl | PrismaClientOptionsWithAdapter
 export type GlobalOmitConfig = {
   nodeLocation?: Prisma.NodeLocationOmit
+  rescueRequest?: Prisma.RescueRequestOmit
 }
 
 /* Types for Logging */

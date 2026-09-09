@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
 // ─────────────────────────────────────────────
+// Backend API base URL
+// ─────────────────────────────────────────────
+
+const BACKEND_URL: &str = "http://localhost:5500";
+
+// ─────────────────────────────────────────────
 // Shared state for serial background thread
 // ─────────────────────────────────────────────
 
@@ -27,7 +33,146 @@ pub struct SerialDataPayload {
 }
 
 // ─────────────────────────────────────────────
-// Tauri Commands
+// Backend API types
+// ─────────────────────────────────────────────
+
+/// Payload sent to POST /api/rescue-request
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveRescueRequestPayload {
+    pub received_at: String,       // ISO-8601
+    pub origin_node: String,
+    pub location: String,
+    pub device_timestamp: String,
+    pub rssi: Option<i64>,
+    pub origin_root: String,
+    pub final_root: String,
+    pub hop_count: Option<i64>,
+    pub encryption: String,
+    pub auth: String,
+    pub status: String,
+    pub notes: String,
+}
+
+/// Record returned by the backend for a RescueRequest row
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbRescueRequest {
+    pub id: i64,
+    pub received_at: String,
+    pub origin_node: String,
+    pub location: String,
+    pub device_timestamp: String,
+    pub rssi: Option<i64>,
+    pub origin_root: String,
+    pub final_root: String,
+    pub hop_count: Option<i64>,
+    pub encryption: String,
+    pub auth: String,
+    pub status: String,
+    pub notes: String,
+    pub created_at: String,
+}
+
+/// Payload sent to PATCH /api/rescue-request/:id
+#[derive(Clone, Serialize, Deserialize)]
+pub struct UpdateRescueRequestPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+// ─────────────────────────────────────────────
+// Backend API Commands
+// ─────────────────────────────────────────────
+
+/// POSTs a new rescue request to the backend.
+/// Returns the created DB record (with the backend-assigned integer id).
+#[tauri::command]
+async fn save_rescue_request(
+    payload: SaveRescueRequestPayload,
+) -> Result<DbRescueRequest, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/rescue-request", BACKEND_URL);
+
+    let response = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Backend error {}: {}", status, body));
+    }
+
+    response
+        .json::<DbRescueRequest>()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))
+}
+
+/// PATCHes an existing rescue request's status and/or notes.
+/// Returns the updated DB record.
+#[tauri::command]
+async fn update_rescue_request(
+    id: i64,
+    status: Option<String>,
+    notes: Option<String>,
+) -> Result<DbRescueRequest, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/rescue-request/{}", BACKEND_URL, id);
+
+    let patch = UpdateRescueRequestPayload { status, notes };
+
+    let response = client
+        .patch(&url)
+        .json(&patch)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Backend error {}: {}", status, body));
+    }
+
+    response
+        .json::<DbRescueRequest>()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))
+}
+
+/// GETs all rescue requests from the backend (ordered by receivedAt asc).
+#[tauri::command]
+async fn load_rescue_requests() -> Result<Vec<DbRescueRequest>, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/rescue-request", BACKEND_URL);
+
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Backend error {}: {}", status, body));
+    }
+
+    response
+        .json::<Vec<DbRescueRequest>>()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))
+}
+
+// ─────────────────────────────────────────────
+// Tauri Commands — Serial
 // ─────────────────────────────────────────────
 
 /// Returns a list of all available serial ports on the host system.
@@ -145,6 +290,9 @@ pub fn run() {
             list_serial_ports,
             start_serial_read,
             stop_serial_read,
+            save_rescue_request,
+            update_rescue_request,
+            load_rescue_requests,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
