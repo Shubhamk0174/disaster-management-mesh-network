@@ -497,8 +497,8 @@ body {
 .left-pane {
   display: flex;
   flex-direction: column;
-  width: 410px;
-  min-width: 320px;
+  width: 300px;
+  min-width: 240px;
   flex-shrink: 0;
   min-height: 0;
   border-right: 1px solid var(--border-dark);
@@ -634,8 +634,7 @@ body {
 /* Card Header — clickable toggle */
 .card-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   padding: 10px 12px 9px;
   gap: 8px;
   cursor: pointer;
@@ -649,8 +648,15 @@ body {
 
 .card-header:hover { background: rgba(0,0,0,0.025); }
 
+.card-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 8px;
+}
+
 .card-chevron {
-  margin-left: auto;
   color: var(--charcoal-soft);
   flex-shrink: 0;
   transition: transform 0.22s var(--ease);
@@ -667,8 +673,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1;
-  min-width: 0;
+  width: 100%;
 }
 
 .card-rssi-pill {
@@ -797,6 +802,7 @@ body {
 .card-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 5px;
   padding: 8px 12px;
   border-top: 1px solid var(--border);
@@ -879,22 +885,180 @@ body {
 }
 
 /* ─────────────────────────────────────────────
+   Centre Pane — Leaflet Map
+───────────────────────────────────────────── */
+.map-pane {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  background: #e8edf2;
+}
+
+.map-container {
+  width: 100%;
+  height: 100%;
+}
+
+/* Hint pill shown when no requests have parseable coords */
+.map-no-data-hint {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(4px);
+  padding: 8px 16px;
+  border-radius: 20px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--charcoal-mid);
+  z-index: 500;  /* above Leaflet tiles (z-index ~400) */
+  pointer-events: none;
+}
+
+/* ── Leaflet overrides ── */
+
+/* Hide the default blue pin icon — we use custom DivIcon */
+.leaflet-default-icon-path { display: none; }
+
+/* Leaflet popup styled to match app design */
+.leaflet-rescue-popup .leaflet-popup-content-wrapper {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border, #E5E7EB);
+}
+
+.leaflet-rescue-popup .leaflet-popup-content {
+  margin: 0;
+  width: auto !important;
+}
+
+.leaflet-rescue-popup .leaflet-popup-tip-container { margin-top: -1px; }
+
+
+
+/* ─── Rescue Marker — red pulsing waves ─── */
+.rescue-marker {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.marker-dot {
+  position: absolute;
+  inset: 0;
+  width: 14px;
+  height: 14px;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #DC2626;
+  border: 2.5px solid #fff;
+  box-shadow: 0 0 0 1.5px rgba(220, 38, 38, 0.5), 0 2px 6px rgba(0,0,0,0.35);
+  z-index: 2;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+
+/* Status colours for the dot */
+.status-marker-solved   .marker-dot { background: #059669; box-shadow: 0 0 0 1.5px rgba(5,150,105,0.5), 0 2px 6px rgba(0,0,0,0.3); }
+.status-marker-unmarked .marker-dot { background: #6B7280; box-shadow: 0 0 0 1.5px rgba(107,114,128,0.5), 0 2px 6px rgba(0,0,0,0.3); }
+
+.marker-wave {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0);
+  border-radius: 50%;
+  border: 2px solid rgba(220, 38, 38, 0.7);
+  animation: rescue-wave 2.4s ease-out infinite;
+  pointer-events: none;
+}
+
+.status-marker-solved   .marker-wave { border-color: rgba(5,150,105,0.7); }
+.status-marker-unmarked .marker-wave { border-color: rgba(107,114,128,0.7); }
+
+.wave-1 { width: 36px; height: 36px; animation-delay: 0s; }
+.wave-2 { width: 56px; height: 56px; animation-delay: 0.6s; }
+.wave-3 { width: 76px; height: 76px; animation-delay: 1.2s; }
+
+@keyframes rescue-wave {
+  0%   { transform: translate(-50%, -50%) scale(0.2); opacity: 0.9; }
+  100% { transform: translate(-50%, -50%) scale(1);   opacity: 0; }
+}
+
+/* ─── Map Popup ─── */
+.map-popup {
+  font-family: var(--font-ui);
+  min-width: 190px;
+}
+
+.map-popup-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--navy);
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  letter-spacing: -0.01em;
+}
+
+.map-popup-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  padding: 2px 0;
+  color: var(--charcoal);
+}
+
+.map-popup-row span:first-child {
+  font-weight: 600;
+  color: var(--charcoal-soft);
+  text-transform: uppercase;
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.map-popup-row span:last-child {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-align: right;
+}
+
+.map-popup-status.unresolved span:last-child { color: var(--unresolved); font-weight: 700; }
+.map-popup-status.solved    span:last-child  { color: var(--solved);     font-weight: 700; }
+.map-popup-status.unmarked  span:last-child  { color: var(--unmarked);   font-weight: 600; }
+
+/* ─────────────────────────────────────────────
    Right Pane — Raw Serial Console
 ───────────────────────────────────────────── */
 .right-pane {
   display: flex;
   flex-direction: column;
-  flex: 1;
+  width: 280px;
+  flex-shrink: 0;
   min-width: 0;
   background: var(--console-bg);
+  border-left: 1px solid rgba(255,255,255,0.05);
   overflow: hidden;
 }
 
 .console-pane-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 7px 14px;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 10px 14px;
   background: var(--console-surface);
   border-bottom: 1px solid var(--console-border);
   flex-shrink: 0;
@@ -912,11 +1076,15 @@ body {
 
 .console-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
+  width: 100%;
 }
 
 .console-input {
+  flex: 1;
+  min-width: 60px;
   background: rgba(255,255,255,0.05);
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: var(--radius-sm);
@@ -925,7 +1093,6 @@ body {
   font-size: 11px;
   padding: 3px 8px;
   outline: none;
-  width: 130px;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 

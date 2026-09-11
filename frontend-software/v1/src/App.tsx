@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import "./App.css";
 
 // ─────────────────────────────────────────────
@@ -72,6 +74,41 @@ interface ParseState {
 let globalEntryId = 0;
 let globalRequestId = 0;
 
+/**
+ * Parse a location string from the serial stream into [lng, lat] for Ola Maps.
+ * Supports formats:
+ *   "12.9716,77.5946"          → [77.5946, 12.9716]
+ *   "12.9716, 77.5946"         → same
+ *   "lat:12.97,lng:77.59"      → same
+ *   "Lat: 12.97 Lng: 77.59"   → same
+ * Returns null if unparseable or out of valid range.
+ */
+function parseLatLng(location: string): [number, number] | null {
+  if (!location || location === "—") return null;
+
+  // Try named key pattern: lat=12.97 lng=77.59 (case-insensitive)
+  const named = location.match(
+    /lat[\s:=]+(-?\d+\.?\d*)\s*[,\s]+lng[\s:=]+(-?\d+\.?\d*)/i
+  );
+  if (named) {
+    const lat = parseFloat(named[1]);
+    const lng = parseFloat(named[2]);
+    if (!isNaN(lat) && !isNaN(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180)
+      return [lng, lat];
+  }
+
+  // Try plain "lat,lng" or "lat, lng"
+  const plain = location.match(/^\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*$/);
+  if (plain) {
+    const lat = parseFloat(plain[1]);
+    const lng = parseFloat(plain[2]);
+    if (!isNaN(lat) && !isNaN(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180)
+      return [lng, lat];
+  }
+
+  return null;
+}
+
 function formatTime(ms: number): string {
   const d = new Date(ms);
   const hh = String(d.getHours()).padStart(2, "0");
@@ -141,13 +178,6 @@ function buildRequest(lines: string[], timestamp: number): RescueRequest {
   return req;
 }
 
-/** Classify RSSI quality */
-function rssiClass(rssi: number | null): string {
-  if (rssi === null) return "";
-  if (rssi >= -60) return "rssi-good";
-  if (rssi >= -80) return "rssi-ok";
-  return "rssi-weak";
-}
 
 /** Classify a console line for highlight styling */
 function lineClass(line: string): string {
@@ -183,9 +213,6 @@ function isRescueRelated(line: string): boolean {
     || t.startsWith("Auth");
 }
 
-// ─────────────────────────────────────────────
-// Clock component
-// ─────────────────────────────────────────────
 // ─────────────────────────────────────────────
 // Inline SVG icons — no emoji
 // ─────────────────────────────────────────────
@@ -259,6 +286,169 @@ const Icons = {
     </svg>
   ),
 };
+
+// ─────────────────────────────────────────────
+// Map component (Leaflet + OpenStreetMap)
+// ─────────────────────────────────────────────
+
+// Default view: India centroid
+const MAP_DEFAULT_CENTER: L.LatLngTuple = [20.5937, 78.9629];
+const MAP_DEFAULT_ZOOM = 5;
+
+interface LeafletMapProps {
+  requests: RescueRequest[];
+}
+
+function LeafletMap({ requests }: LeafletMapProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef       = useRef<L.Map | null>(null);
+  const markersRef   = useRef<Map<number, L.Marker>>(new Map());
+  const initializedRef = useRef(false);
+
+  // Always reflect the latest requests in async callbacks
+  const latestRequestsRef = useRef<RescueRequest[]>(requests);
+  latestRequestsRef.current = requests;
+
+  // ── doSync: add/remove markers, adjust camera ────────────────
+  const doSync = useCallback((map: L.Map, reqs: RescueRequest[], fitAll: boolean) => {
+    // Only show unresolved and unmarked
+    const visibleReqs = reqs.filter((r) => r.status !== "solved");
+    const visibleIds  = new Set(visibleReqs.map((r) => r.id));
+
+    // Remove solved / deleted markers
+    markersRef.current.forEach((marker, id) => {
+      if (!visibleIds.has(id)) {
+        marker.remove();
+        markersRef.current.delete(id);
+      }
+    });
+
+    const allLatLng: L.LatLngTuple[] = [];
+    const newLatLng: L.LatLngTuple[] = [];
+
+    visibleReqs.forEach((req) => {
+      // parseLatLng returns [lng, lat] — Leaflet needs [lat, lng]
+      const coords = parseLatLng(req.location);
+      if (!coords) return;
+      const [lng, lat] = coords;
+      const latlng: L.LatLngTuple = [lat, lng];
+      allLatLng.push(latlng);
+
+      if (markersRef.current.has(req.id)) {
+        // Update position + status colour class
+        const m = markersRef.current.get(req.id)!;
+        m.setLatLng(latlng);
+        const el = m.getElement();
+        if (el) el.className = `rescue-marker status-marker-${req.status}`;
+        return;
+      }
+
+      // Brand-new marker
+      newLatLng.push(latlng);
+
+      const icon = L.divIcon({
+        className: `rescue-marker status-marker-${req.status}`,
+        html: `
+          <div class="marker-wave wave-1"></div>
+          <div class="marker-wave wave-2"></div>
+          <div class="marker-wave wave-3"></div>
+          <div class="marker-dot"></div>
+        `,
+        iconSize:   [76, 76],
+        iconAnchor: [38, 38],
+      });
+
+      const popupHtml = `
+        <div class="map-popup">
+          <div class="map-popup-title">Request #${req.id} &mdash; ${req.originNode}</div>
+          <div class="map-popup-row"><span>Location</span><span>${req.location}</span></div>
+          <div class="map-popup-row"><span>RSSI</span><span>${req.rssi !== null ? req.rssi + " dBm" : "—"}</span></div>
+          <div class="map-popup-row"><span>Hop Count</span><span>${req.hopCount ?? "—"}</span></div>
+          <div class="map-popup-row map-popup-status ${req.status}"><span>Status</span><span>${req.status.charAt(0).toUpperCase() + req.status.slice(1)}</span></div>
+        </div>
+      `;
+
+      const marker = L.marker(latlng, { icon })
+        .bindPopup(popupHtml, { maxWidth: 260, className: "leaflet-rescue-popup" })
+        .addTo(map);
+
+      markersRef.current.set(req.id, marker);
+    });
+
+    // Camera logic
+    try {
+      if (fitAll && allLatLng.length > 1) {
+        map.fitBounds(allLatLng as L.LatLngBoundsExpression, { padding: [60, 60], maxZoom: 12 });
+      } else if (allLatLng.length === 1 && (fitAll || newLatLng.length > 0)) {
+        map.flyTo(allLatLng[0], 12, { duration: 1.2 });
+      } else if (newLatLng.length === 1) {
+        map.flyTo(newLatLng[0], 12, { duration: 1.2 });
+      } else if (newLatLng.length > 1) {
+        map.fitBounds(newLatLng as L.LatLngBoundsExpression, { padding: [60, 60], maxZoom: 12 });
+      }
+    } catch (e) {
+      console.warn("[LeafletMap] Camera move failed:", e);
+    }
+  }, []);
+
+  // Initialise map once
+  useEffect(() => {
+    if (initializedRef.current || !containerRef.current) return;
+    initializedRef.current = true;
+
+    const map = L.map(containerRef.current, {
+      center: MAP_DEFAULT_CENTER,
+      zoom:   MAP_DEFAULT_ZOOM,
+      zoomControl: true,
+      attributionControl: false,
+    });
+
+    // OpenStreetMap tiles — no API key required
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+    }).addTo(map);
+
+    mapRef.current = map;
+
+    // Run initial sync once tiles are ready
+    map.whenReady(() => {
+      doSync(map, latestRequestsRef.current, true);
+    });
+
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      initializedRef.current = false;
+      markersRef.current.clear();
+    };
+  }, [doSync]);
+
+  // Re-sync whenever requests change
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    doSync(map, requests, false);
+  }, [requests, doSync]);
+
+  const hasCoords = requests.some((r) => r.status !== "solved" && parseLatLng(r.location) !== null);
+
+  return (
+    <div className="map-pane">
+      <div ref={containerRef} className="map-container" />
+      {!hasCoords && (
+        <div className="map-no-data-hint">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 10c0 7-9 13-9 13S3 17 3 10a9 9 0 0 1 18 0z"/>
+            <circle cx="12" cy="10" r="3"/>
+          </svg>
+          Awaiting GPS coordinates from rescue nodes
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 
 // ─────────────────────────────────────────────
 // Clock component
@@ -846,6 +1036,10 @@ function App() {
           )}
         </div>
 
+        {/* ────── Centre Pane — Leaflet Map ────── */}
+        <LeafletMap requests={requests} />
+
+
         {/* ────── Right Pane — Raw Serial Console ────── */}
         <div className="right-pane">
           <div className="console-pane-header">
@@ -970,9 +1164,20 @@ function RequestCard({ req, onStatusChange, onNotesChange }: RequestCardProps) {
         tabIndex={0}
         onKeyDown={(e) => e.key === "Enter" || e.key === " " ? setIsExpanded((v) => !v) : undefined}
       >
-        <div className="card-id-block">
-          <span className="card-id">Request #{req.id}</span>
-          <span className="card-ts">{formatTimeShort(req.receivedAt)}</span>
+        <div className="card-header-top">
+          <div className="card-id-block">
+            <span className="card-id">Request #{req.id}</span>
+            <span className="card-ts">{formatTimeShort(req.receivedAt)}</span>
+          </div>
+
+          <span className={`status-badge ${badgeClass}`}>{badgeLabel}</span>
+
+          {/* Chevron */}
+          <span className="card-chevron" aria-hidden="true">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </span>
         </div>
 
         <div className="card-header-meta">
@@ -992,15 +1197,6 @@ function RequestCard({ req, onStatusChange, onNotesChange }: RequestCardProps) {
             </span>
           )}
         </div>
-
-        <span className={`status-badge ${badgeClass}`}>{badgeLabel}</span>
-
-        {/* Chevron */}
-        <span className="card-chevron" aria-hidden="true">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="6 9 12 15 18 9"/>
-          </svg>
-        </span>
       </div>
 
       {/* ── Collapsible body ── */}
@@ -1017,7 +1213,7 @@ function RequestCard({ req, onStatusChange, onNotesChange }: RequestCardProps) {
 
             <div className="card-field">
               <span className="field-label">RSSI</span>
-              <span className={`field-value ${rssiClass(req.rssi)}`}>
+              <span className={`field-value ${rssiPillClass}`}>
                 {req.rssi !== null ? `${req.rssi} dBm` : "—"}
               </span>
             </div>
