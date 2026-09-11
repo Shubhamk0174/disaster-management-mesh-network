@@ -1077,3 +1077,272 @@ body {
   background: rgba(255,255,255,0.18);
   display: inline-block;
 }
+
+/* ─────────────────────────────────────────────
+   View Tab Buttons (Dashboard / Map)
+───────────────────────────────────────────── */
+
+.view-tabs {
+  gap: 4px;
+  margin-left: auto;
+}
+
+.view-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.05);
+  color: rgba(255,255,255,0.55);
+  font-size: 11.5px;
+  font-family: var(--font-ui);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  position: relative;
+}
+
+.view-tab:hover {
+  background: rgba(255,255,255,0.10);
+  color: rgba(255,255,255,0.85);
+}
+
+.view-tab-active {
+  background: rgba(59,130,246,0.22) !important;
+  border-color: rgba(59,130,246,0.55) !important;
+  color: #93c5fd !important;
+}
+
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* ─────────────────────────────────────────────
+   Map View Pane (full right-pane fill)
+───────────────────────────────────────────── */
+
+.right-pane-map {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ─────────────────────────────────────────────
+   Right-Pane Tab Bar (Raw Feed | Map)
+───────────────────────────────────────────── */
+
+.right-pane-tabs {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.rpane-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 11px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgba(255,255,255,0.40);
+  font-size: 11px;
+  font-family: var(--font-ui);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+  white-space: nowrap;
+}
+
+.rpane-tab:hover {
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.70);
+}
+
+.rpane-tab-active {
+  background: rgba(59,130,246,0.18) !important;
+  border-color: rgba(59,130,246,0.40) !important;
+  color: #93c5fd !important;
+}
+
+.map-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #0d1117;
+}
+
+.map-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* ─────────────────────────────────────────────
+   Map Legend
+───────────────────────────────────────────── */
+
+.map-legend {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 10;
+  background: rgba(15,20,40,0.88);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: rgba(255,255,255,0.75);
+  min-width: 120px;
+}
+
+.legend-title {
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.45);
+  margin-bottom: 8px;
+}
+
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+}
+
+.legend-row:last-child { margin-bottom: 0; }
+
+.legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ─────────────────────────────────────────────
+   Map Empty State
+───────────────────────────────────────────── */
+
+.map-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  pointer-events: none;
+  font-family: var(--font-ui);
+  text-align: center;
+  padding: 24px;
+}
+
+.map-empty p {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(255,255,255,0.55);
+}
+
+.map-empty-sub {
+  font-size: 11px !important;
+  color: rgba(255,255,255,0.30) !important;
+  max-width: 280px;
+}
+
+/* ─────────────────────────────────────────────
+   SOS Marker
+───────────────────────────────────────────── */
+
+.sos-marker {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sos-pin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  filter: drop-shadow(0 4px 8px rgba(0,0,0,0.6));
+  transition: transform 0.15s;
+}
+
+.sos-pin:hover {
+  transform: scale(1.15) translateY(-2px);
+}
+
+.sos-label {
+  margin-top: -2px;
+  background: rgba(0,0,0,0.75);
+  color: #fff;
+  font-family: var(--font-ui);
+  font-size: 9px;
+  font-weight: 600;
+  padding: 2px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  letter-spacing: 0.03em;
+}
+
+/* ─────────────────────────────────────────────
+   SOS Popup (inside OlaMaps popup)
+───────────────────────────────────────────── */
+
+.sos-popup {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  min-width: 160px;
+}
+
+.sos-popup-node {
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 4px;
+  color: #1e293b;
+}
+
+.sos-popup-loc {
+  color: #475569;
+  font-size: 11px;
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+
+.sos-popup-status {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.sos-status-unresolved { background: #fee2e2; color: #dc2626; }
+.sos-status-unmarked   { background: #fef3c7; color: #b45309; }
+.sos-status-solved     { background: #dcfce7; color: #16a34a; }
+
+.sos-popup-time {
+  color: #94a3b8;
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+
