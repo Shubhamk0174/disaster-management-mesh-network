@@ -636,8 +636,10 @@ function App() {
     ? Math.round(rssiValues.reduce((a, b) => a + b, 0) / rssiValues.length)
     : null;
 
-  // ── Map markers derived from all requests ─────────────────────────
-  const sosMarkers: SosMarker[] = requests.map((r) => ({
+  // ── Map markers derived from all requests (excluding solved) ──────
+  const sosMarkers: SosMarker[] = requests
+    .filter((r) => r.status !== "solved")
+    .map((r) => ({
     id: r.id,
     originNode: r.originNode,
     location: r.location,
