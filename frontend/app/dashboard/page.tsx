@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { getNodeLocations, getRescueRequests, updateRescueRequest, type NodeLocation, type RescueRequest, type Status } from "../data/rescueApi";
+import OlaRescueMap from "../components/OlaRescueMap";
 
 function statusLabel(status: Status) {
   return status === "unresolved" ? "UNRESOLVED" : status === "solved" ? "SOLVED" : "UNMARKED";
@@ -151,7 +152,7 @@ export default function Dashboard() {
 
         <section className="panel networkPanel">
           <div className="panelHead"><div><h2>Mesh network</h2><span>Latest NodeLocation records from the backend</span></div><span className="liveTag"><span className="greenDot" /> {connected ? "LIVE API" : "OFFLINE"}</span></div>
-          <NetworkMap nodes={nodes} />
+          <NetworkMap nodes={nodes} requests={requests} />
           <div className="nodeTable">
             {nodes.length ? nodes.map(node => <div className="nodeRow" key={`${node.node_id}-${node.timestamp}`}><strong>{node.node_id}</strong><span>{node.latitude.toFixed(4)}, {node.longitude.toFixed(4)}</span><span>{stableDateTime(node.timestamp)}</span><span>NodeLocation</span><span className="healthy">Reported</span></div>) : <div className="emptyState">No node locations are available from the backend yet.</div>}
           </div>
@@ -163,62 +164,8 @@ export default function Dashboard() {
   );
 }
 
-function NetworkMap({ nodes }: { nodes: NodeLocation[] }) {
-  const unique = Array.from(new Map(nodes.map(node => [node.node_id, node])).values());
-  const ordered = [...unique].sort((a, b) => a.node_id.localeCompare(b.node_id, undefined, { numeric: true }));
-  const lats = ordered.map(node => node.latitude);
-  const lngs = ordered.map(node => node.longitude);
-  const minLat = lats.length ? Math.min(...lats) : 17.38;
-  const maxLat = lats.length ? Math.max(...lats) : 17.41;
-  const minLng = lngs.length ? Math.min(...lngs) : 78.46;
-  const maxLng = lngs.length ? Math.max(...lngs) : 78.51;
-  const latRange = Math.max(maxLat - minLat, 0.001);
-  const lngRange = Math.max(maxLng - minLng, 0.001);
-  const project = (node: NodeLocation) => ({
-    x: 10 + ((node.longitude - minLng) / lngRange) * 76,
-    y: 12 + ((maxLat - node.latitude) / latRange) * 72,
-  });
-  const points = ordered.map(project);
-  const gateway = { x: 88, y: 78 };
-  const routePoints = [...points, gateway].map(point => `${point.x},${point.y}`).join(" ");
-
-  return (
-    <div className="networkMap">
-      <svg className="mapTexture" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-        <rect width="100" height="100" className="mapLand" />
-        <path className="mapWater" d="M0 9 C14 5 21 17 33 13 C48 8 60 12 71 7 C84 2 91 10 100 6 L100 0 L0 0Z" />
-        <path className="mapWater" d="M100 90 C87 82 78 88 66 85 C54 82 46 92 34 88 C21 84 11 92 0 89 L0 100 L100 100Z" />
-        <path className="mapPark" d="M4 23 C13 17 22 21 27 28 C21 36 11 37 4 31Z" />
-        <path className="mapPark" d="M72 12 C81 7 93 12 97 20 C91 27 79 26 72 12Z" />
-        <path className="mapPark" d="M47 70 C56 64 68 69 70 78 C63 87 51 84 47 70Z" />
-        <g className="mapBlocks">
-          <path d="M2 41 H30 M2 47 H28 M5 53 H34 M3 59 H38 M11 65 H42 M22 39 V68 M32 37 V72" />
-          <path d="M57 34 H98 M55 40 H97 M59 47 H99 M56 54 H94 M60 61 H97 M68 31 V63 M80 28 V67 M91 30 V62" />
-          <path d="M7 75 H43 M11 82 H48 M17 89 H53 M27 95 H60 M17 73 V96 M30 71 V99 M42 76 V99" />
-        </g>
-        <g className="mapRoads">
-          <path className="mapRoad major" d="M-4 58 C18 53 32 58 48 54 C65 50 81 54 104 43" />
-          <path className="mapRoad major" d="M43 -4 C47 18 48 31 51 48 C54 67 61 83 67 104" />
-          <path className="mapRoad" d="M-4 29 C16 33 30 27 48 30 C67 34 83 32 104 27" />
-          <path className="mapRoad" d="M5 103 C13 80 20 67 31 51 C43 35 51 27 65 17 C78 8 90 6 104 3" />
-          <path className="mapRoad" d="M-2 75 C15 71 29 77 43 81 C59 86 76 82 102 89" />
-        </g>
-        <polyline points={routePoints} className="mapRoute" />
-        {points.map((point, index) => <circle key={ordered[index].node_id} cx={point.x} cy={point.y} r="8" className="mapCoverage" />)}
-        <circle cx={gateway.x} cy={gateway.y} r="8" className="mapCoverage rescueCoverage" />
-      </svg>
-      {ordered.map((node, index) => {
-        const point = points[index];
-        return <div key={node.node_id} className="fakeNode dashboardNode" style={{ left: `${point.x}%`, top: `${point.y}%` }}><span>{String(index + 1).padStart(2, "0")}</span><small>{node.node_id}</small></div>;
-      })}
-      <div className="fakeNode dashboardNode rescueNode" style={{ left: `${gateway.x}%`, top: `${gateway.y}%` }}><span>R</span><small>RESCUE NODE</small></div>
-      <div className="mapScale">N ↑</div>
-      <div className="mapGridLabel labelA">FIELD RELAY ZONE</div>
-      <div className="mapGridLabel labelB">MESH CORRIDOR</div>
-      <div className="mapGridLabel labelC">GATEWAY</div>
-      <div className="mapLegend"><span><i className="routeKey" /> ACTIVE ROUTE</span><span><i className="coverageKey" /> RADIO RANGE</span><span><i className="gatewayKey" /> GATEWAY</span></div>
-    </div>
-  );
+function NetworkMap({ nodes, requests }: { nodes: NodeLocation[]; requests: RescueRequest[] }) {
+  return <OlaRescueMap nodes={nodes} requests={requests} />;
 }
 
 function Stat({ label, value, meta, alert = false }: { label: string; value: string | number; meta: string; alert?: boolean }) {

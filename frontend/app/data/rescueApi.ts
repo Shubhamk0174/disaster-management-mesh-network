@@ -27,26 +27,27 @@ export type NodeLocation = {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:5500";
 
-async function getJson(path: string) {
+async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
   if (!response.ok) throw new Error(`API ${response.status}`);
-  return response.json();
+  return response.json() as Promise<T>;
 }
 
-export async function getRescueRequests() {
-  return (await getJson("/api/rescue-request")) as RescueRequest[];
+export function getRescueRequests(): Promise<RescueRequest[]> {
+  return getJson<RescueRequest[]>("/api/rescue-request");
 }
 
-export async function getNodeLocations() {
-  return (await getJson("/api/node-location")) as NodeLocation[];
+export function getNodeLocations(): Promise<NodeLocation[]> {
+  return getJson<NodeLocation[]>("/api/node-location");
 }
 
-export async function updateRescueRequest(id: number, status: Status) {
+export async function updateRescueRequest(id: number, status: Status): Promise<RescueRequest> {
   const response = await fetch(`${API_BASE}/api/rescue-request/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status }),
   });
+
   if (!response.ok) throw new Error(`API ${response.status}`);
   return response.json() as Promise<RescueRequest>;
 }
