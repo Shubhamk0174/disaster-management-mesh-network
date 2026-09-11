@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./App.css";
+import MapView, { SosMarker } from "./MapView";
 
 // ─────────────────────────────────────────────
 // Types
@@ -356,6 +357,9 @@ function App() {
   const [connecting, setConnecting]     = useState(false);
   const [statusMsg, setStatusMsg]       = useState("Disconnected");
 
+  // Active view tab
+  const [activeView, setActiveView]     = useState<"dashboard" | "map">("dashboard");
+
   // Log / console state
   const [logs, setLogs]                 = useState<LogEntry[]>([]);
   const [autoScroll, setAutoScroll]     = useState(true);
@@ -632,6 +636,15 @@ function App() {
     ? Math.round(rssiValues.reduce((a, b) => a + b, 0) / rssiValues.length)
     : null;
 
+  // ── Map markers derived from all requests ─────────────────────────
+  const sosMarkers: SosMarker[] = requests.map((r) => ({
+    id: r.id,
+    originNode: r.originNode,
+    location: r.location,
+    receivedAt: r.receivedAt,
+    status: r.status,
+  }));
+
   // ─────────────────────────────────────────────────────────────────
   // Render
   // ─────────────────────────────────────────────────────────────────
@@ -846,71 +859,109 @@ function App() {
           )}
         </div>
 
-        {/* ────── Right Pane — Raw Serial Console ────── */}
+        {/* ────── Right Pane — Serial Console / Map ────── */}
         <div className="right-pane">
           <div className="console-pane-header">
-            <span className="console-pane-title">Raw Serial Feed</span>
-            <div className="console-toolbar">
-              <span className="line-count-badge">{logs.length} lines</span>
-              <input
-                id="console-filter-input"
-                className="console-input"
-                placeholder="Filter…"
-                value={consoleFilter}
-                onChange={(e) => setConsoleFilter(e.target.value)}
-              />
+            {/* Tab toggle */}
+            <div className="right-pane-tabs">
               <button
-                id="autoscroll-btn"
-                className={`btn-console ${autoScroll ? "active" : ""}`}
-                onClick={() => setAutoScroll((v) => !v)}
-                title="Toggle auto-scroll"
+                id="rpane-tab-console"
+                className={`rpane-tab ${activeView !== "map" ? "rpane-tab-active" : ""}`}
+                onClick={() => setActiveView("dashboard")}
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19"/>
-                  <polyline points="19 12 12 19 5 12"/>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="4 17 10 11 4 5"/>
+                  <line x1="12" y1="19" x2="20" y2="19"/>
                 </svg>
-                Auto-scroll
+                Raw Feed
               </button>
               <button
-                id="clear-console-btn"
-                className="btn-console btn-console-clear"
-                onClick={clearLogs}
+                id="rpane-tab-map"
+                className={`rpane-tab ${activeView === "map" ? "rpane-tab-active" : ""}`}
+                onClick={() => setActiveView("map")}
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18"/>
-                  <line x1="6" y1="6" x2="18" y2="18"/>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
+                  <circle cx="12" cy="10" r="3"/>
                 </svg>
-                Clear
+                Map
+                {requests.length > 0 && (
+                  <span className="tab-badge">{requests.length}</span>
+                )}
               </button>
             </div>
-          </div>
 
-          <div
-            id="serial-console"
-            className="console"
-            ref={consoleRef}
-            onScroll={handleScroll}
-          >
-            {filteredLogs.length === 0 ? (
-              <div className="console-empty">
-                {connected
-                  ? "Waiting for data..."
-                  : "Connect to see live serial output"}
-              </div>
-            ) : (
-              filteredLogs.map((entry) => (
-                <div
-                  key={entry.id}
-                  className={`console-line ${isRescueRelated(entry.line) ? "highlight-rescue" : ""}`}
+            {/* Console toolbar — only visible on Raw Feed tab */}
+            {activeView !== "map" && (
+              <div className="console-toolbar">
+                <span className="line-count-badge">{logs.length} lines</span>
+                <input
+                  id="console-filter-input"
+                  className="console-input"
+                  placeholder="Filter…"
+                  value={consoleFilter}
+                  onChange={(e) => setConsoleFilter(e.target.value)}
+                />
+                <button
+                  id="autoscroll-btn"
+                  className={`btn-console ${autoScroll ? "active" : ""}`}
+                  onClick={() => setAutoScroll((v) => !v)}
+                  title="Toggle auto-scroll"
                 >
-                  <span className="console-ts">{formatTime(entry.timestamp)}</span>
-                  <span className={`console-text ${lineClass(entry.line)}`}>
-                    {entry.line}
-                  </span>
-                </div>
-              ))
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19"/>
+                    <polyline points="19 12 12 19 5 12"/>
+                  </svg>
+                  Auto-scroll
+                </button>
+                <button
+                  id="clear-console-btn"
+                  className="btn-console btn-console-clear"
+                  onClick={clearLogs}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"/>
+                    <line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                  Clear
+                </button>
+              </div>
             )}
           </div>
+
+          {/* Map view inside right pane */}
+          {activeView === "map" ? (
+            <div className="right-pane-map">
+              <MapView markers={sosMarkers} />
+            </div>
+          ) : (
+            <div
+              id="serial-console"
+              className="console"
+              ref={consoleRef}
+              onScroll={handleScroll}
+            >
+              {filteredLogs.length === 0 ? (
+                <div className="console-empty">
+                  {connected
+                    ? "Waiting for data..."
+                    : "Connect to see live serial output"}
+                </div>
+              ) : (
+                filteredLogs.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className={`console-line ${isRescueRelated(entry.line) ? "highlight-rescue" : ""}`}
+                  >
+                    <span className="console-ts">{formatTime(entry.timestamp)}</span>
+                    <span className={`console-text ${lineClass(entry.line)}`}>
+                      {entry.line}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
         </div>
       </div>
 
