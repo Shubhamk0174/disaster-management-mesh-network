@@ -80,7 +80,7 @@ function createMarkerEl(color: string, label: string): HTMLDivElement {
 // Component
 // ─────────────────────────────────────────────
 
-const OLA_API_KEY = "y9iFbVxUjJvNrXiUzH0o35fVFcg1uernjJRet18G";
+const OLA_API_KEY = import.meta.env.VITE_OLA_API_KEY as string;
 const DEFAULT_CENTER: [number, number] = [77.209, 28.6139]; // New Delhi fallback
 
 export default function MapView({ markers }: MapViewProps) {
@@ -198,12 +198,10 @@ export default function MapView({ markers }: MapViewProps) {
       {/* Empty state */}
       {markers.filter(m => parseLatLon(m.location)).length === 0 && (
         <div className="map-empty">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6b7280" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
-            <circle cx="12" cy="10" r="3"/>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>
           </svg>
-          <p>No SOS requests with GPS coordinates yet.</p>
-          <p className="map-empty-sub">Markers will appear here when nodes send location data.</p>
+          <p>No GPS coordinates yet</p>
         </div>
       )}
     </div>

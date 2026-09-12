@@ -11,7 +11,9 @@ use tauri::{AppHandle, Emitter, State};
 // Backend API base URL
 // ─────────────────────────────────────────────
 
-const BACKEND_URL: &str = "http://localhost:5500";
+fn backend_url() -> &'static str {
+    option_env!("VITE_BACKEND_URL").unwrap_or("http://localhost:5500")
+}
 
 // ─────────────────────────────────────────────
 // Shared state for serial background thread
@@ -94,7 +96,7 @@ async fn save_rescue_request(
     payload: SaveRescueRequestPayload,
 ) -> Result<DbRescueRequest, String> {
     let client = reqwest::Client::new();
-    let url = format!("{}/api/rescue-request", BACKEND_URL);
+    let url = format!("{}/api/rescue-request", backend_url());
 
     let response = client
         .post(&url)
@@ -124,7 +126,7 @@ async fn update_rescue_request(
     notes: Option<String>,
 ) -> Result<DbRescueRequest, String> {
     let client = reqwest::Client::new();
-    let url = format!("{}/api/rescue-request/{}", BACKEND_URL, id);
+    let url = format!("{}/api/rescue-request/{}", backend_url(), id);
 
     let patch = UpdateRescueRequestPayload { status, notes };
 
@@ -151,7 +153,7 @@ async fn update_rescue_request(
 #[tauri::command]
 async fn load_rescue_requests() -> Result<Vec<DbRescueRequest>, String> {
     let client = reqwest::Client::new();
-    let url = format!("{}/api/rescue-request", BACKEND_URL);
+    let url = format!("{}/api/rescue-request", backend_url());
 
     let response = client
         .get(&url)
