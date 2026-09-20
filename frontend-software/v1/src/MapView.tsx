@@ -166,13 +166,13 @@ export default function MapView({ markers }: MapViewProps) {
 
     // Auto-fit bounds if we have markers
     if (validMarkers.length === 1) {
-      map.flyTo({ center: [validMarkers[0].lon, validMarkers[0].lat], zoom: 13 });
+      map.flyTo({ center: [validMarkers[0].lon, validMarkers[0].lat], zoom: 16 });
     } else if (validMarkers.length > 1) {
       const lngs = validMarkers.map((m) => m.lon);
       const lats = validMarkers.map((m) => m.lat);
       const sw: [number, number] = [Math.min(...lngs), Math.min(...lats)];
       const ne: [number, number] = [Math.max(...lngs), Math.max(...lats)];
-      map.fitBounds([sw, ne], { padding: 80 });
+      map.fitBounds([sw, ne], { padding: 250 });
     }
   }, [markers]);
 

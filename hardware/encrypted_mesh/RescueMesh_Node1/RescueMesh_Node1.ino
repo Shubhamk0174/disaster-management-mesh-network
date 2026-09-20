@@ -1,74 +1,34 @@
-// ============================================================================
-// RescueMesh_Node1.ino
-//
-// NODE A - NORMAL NODE
-//
-// Capabilities:
-//   1. SOS sender
-//   2. SOS relay
-//   3. Receives NODE B SOS and relays it
-//   4. Ed25519 authentication
-//   5. X25519 shared-secret derivation
-//   6. HKDF-SHA256 encryption key derivation
-//   7. ChaCha20-Poly1305 encryption
-//   8. RSSI-based relay delay
-//
-// Hardware:
-//   LoRa SCK  -> GPIO18
-//   LoRa MISO -> GPIO19
-//   LoRa MOSI -> GPIO23
-//   LoRa NSS  -> GPIO27
-//   LoRa RST  -> GPIO14
-//   LoRa DIO0 -> GPIO26
-//   SOS       -> GPIO33 -> button -> GND
-//
-// Required files in this folder:
-//
-//   RescueMesh_Node1.ino
-//   mesh_common.h
-//   node_a_config.h
-// ============================================================================
-
 #include <Arduino.h>
 #include <LoRa.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
 
 #include "node_a_config.h"
 #include "mesh_common.h"
 
-// ============================================================================
-// NODE ID
-// ============================================================================
-
 #define MY_NODE_ID NODE_A_ID
 
-// ============================================================================
-// CHANGE THIS TO THE ACTUAL LOCATION OF NODE A
-// Example:
-// const char SOS_LOCATION[] = "13.0827,80.2707";
-// ============================================================================
-
-const char SOS_LOCATION[] = "YOUR_LATITUDE,YOUR_LONGITUDE";
-
-// ============================================================================
-// TIMING
-// ============================================================================
+const char NODE_LOCATION[] = "16.494485,80.499179";
 
 #define ACK_TIMEOUT_MS       1200
-#define ORIGIN_RETRIES      3
-#define BUTTON_DEBOUNCE_MS  250
+#define ORIGIN_RETRIES       3
+#define BUTTON_DEBOUNCE_MS   250
 
-// ============================================================================
-// NODE STATE
-// ============================================================================
+#define WIFI_AP_SSID         "RESCUE-MESH"
+
+#define DNS_PORT             53
+
+#define SOS_COOLDOWN_MS      10000
+
+WebServer server(80);
+DNSServer dnsServer;
 
 bool waitingForAck = false;
 uint32_t lastButtonPress = 0;
+uint32_t lastSOSRequest = 0;
 
-// ============================================================================
-// TRUSTED ED25519 PUBLIC KEY LOOKUP
-// ============================================================================
-
-static bool getTrustedEd25519PublicKey(
+bool getTrustedEd25519PublicKey(
     uint8_t nodeId,
     uint8_t out[32]
 ) {
@@ -100,17 +60,6 @@ static bool getTrustedEd25519PublicKey(
     }
 }
 
-// ============================================================================
-// SEND ACK
-// ============================================================================
-//
-// Uses the ACK helpers already provided by mesh_common.h:
-//
-//   createAck()
-//   transmitAck()
-//
-// ============================================================================
-
 static void sendAck(
     uint8_t originId,
     uint32_t originRoot,
@@ -121,10 +70,6 @@ static void sendAck(
     uint8_t privateKey[32];
     uint8_t publicKey[32];
 
-    // ------------------------------------------------------------------------
-    // Load our Ed25519 private key
-    // ------------------------------------------------------------------------
-
     if (!hexToBytes(
         OWN_ED25519_PRIVATE,
         privateKey,
@@ -133,10 +78,6 @@ static void sendAck(
         Serial.println("ERROR: invalid Ed25519 private key");
         return;
     }
-
-    // ------------------------------------------------------------------------
-    // Load our Ed25519 public key
-    // ------------------------------------------------------------------------
 
     if (!hexToBytes(
         OWN_ED25519_PUBLIC,
@@ -148,10 +89,6 @@ static void sendAck(
         return;
     }
 
-    // ------------------------------------------------------------------------
-    // Create and sign ACK
-    // ------------------------------------------------------------------------
-
     createAck(
         ack,
         MY_NODE_ID,
@@ -162,23 +99,14 @@ static void sendAck(
         publicKey
     );
 
-    // Clear private key from RAM
     memset(privateKey, 0, sizeof(privateKey));
     memset(publicKey, 0, sizeof(publicKey));
 
     Serial.print("Sending ACK from NODE_A to origin NODE_");
     Serial.println(originId);
 
-    // ------------------------------------------------------------------------
-    // Transmit ACK
-    // ------------------------------------------------------------------------
-
     transmitAck(ack);
 }
-
-// ============================================================================
-// WAIT FOR ACK
-// ============================================================================
 
 static bool waitForAck(
     uint32_t originRoot
@@ -195,10 +123,6 @@ static bool waitForAck(
             delay(2);
             continue;
         }
-
-        // --------------------------------------------------------------------
-        // Ignore anything that is not an ACK
-        // --------------------------------------------------------------------
 
         if (packetSize != sizeof(AckPacket)) {
 
@@ -223,36 +147,19 @@ static bool waitForAck(
             continue;
         }
 
-        // --------------------------------------------------------------------
-        // Basic ACK validation
-        // --------------------------------------------------------------------
-
         if (ack.magic != PROTOCOL_MAGIC ||
             ack.version != PROTOCOL_VERSION ||
             ack.type != PACKET_ACK) {
-
             continue;
         }
-
-        // --------------------------------------------------------------------
-        // ACK must belong to this node
-        // --------------------------------------------------------------------
 
         if (ack.origin_id != MY_NODE_ID) {
             continue;
         }
 
-        // --------------------------------------------------------------------
-        // ACK must belong to this exact SOS
-        // --------------------------------------------------------------------
-
         if (ack.origin_root != originRoot) {
             continue;
         }
-
-        // --------------------------------------------------------------------
-        // Get trusted public key of responder
-        // --------------------------------------------------------------------
 
         uint8_t responderPublicKey[32];
 
@@ -263,10 +170,6 @@ static bool waitForAck(
             Serial.println("Unknown ACK responder");
             continue;
         }
-
-        // --------------------------------------------------------------------
-        // Verify ACK signature
-        // --------------------------------------------------------------------
 
         if (!verifyAck(
             ack,
@@ -287,18 +190,11 @@ static bool waitForAck(
     return false;
 }
 
-// ============================================================================
-// CREATE + ENCRYPT SOS
-// ============================================================================
-
 static bool createSOS(
-    MeshPacket &packet
+    MeshPacket &packet,
+    const char *location
 ) {
     memset(&packet, 0, sizeof(packet));
-
-    // ------------------------------------------------------------------------
-    // Basic packet information
-    // ------------------------------------------------------------------------
 
     packet.magic = PROTOCOL_MAGIC;
     packet.version = PROTOCOL_VERSION;
@@ -307,45 +203,19 @@ static bool createSOS(
     packet.origin_id = MY_NODE_ID;
     packet.hop_count = 0;
 
-    // ------------------------------------------------------------------------
-    // Timestamp
-    // ------------------------------------------------------------------------
-
     packet.timestamp_ms = millis();
-
-    // ------------------------------------------------------------------------
-    // Generate cryptographically random nonce
-    // ------------------------------------------------------------------------
 
     generateNonce(packet.nonce);
 
-    // ------------------------------------------------------------------------
-    // Create initial routing root
-    //
-    // ROOT0 = SHA256(
-    //     location +
-    //     timestamp +
-    //     origin node ID
-    // )
-    // ------------------------------------------------------------------------
-
     packet.origin_root = createInitialRoot(
-        SOS_LOCATION,
+        location,
         packet.timestamp_ms,
         MY_NODE_ID
     );
 
     packet.current_root = packet.origin_root;
 
-    // ------------------------------------------------------------------------
-    // Mark NODE A as visited
-    // ------------------------------------------------------------------------
-
     packet.visited_mask = nodeMask(MY_NODE_ID);
-
-    // ------------------------------------------------------------------------
-    // Load our X25519 private key
-    // ------------------------------------------------------------------------
 
     uint8_t ownX25519Private[32];
     uint8_t rescueX25519Public[32];
@@ -358,10 +228,6 @@ static bool createSOS(
         Serial.println("ERROR: invalid own X25519 private key");
         return false;
     }
-
-    // ------------------------------------------------------------------------
-    // Load Rescue X25519 public key
-    // ------------------------------------------------------------------------
 
     if (!hexToBytes(
         TRUSTED_RESCUE_X25519,
@@ -379,10 +245,6 @@ static bool createSOS(
         return false;
     }
 
-    // ------------------------------------------------------------------------
-    // Derive X25519 shared secret
-    // ------------------------------------------------------------------------
-
     uint8_t sharedSecret[32];
 
     if (!deriveSharedSecret(
@@ -391,7 +253,9 @@ static bool createSOS(
         sharedSecret
     )) {
 
-        Serial.println("ERROR: X25519 shared-secret derivation failed");
+        Serial.println(
+            "ERROR: X25519 shared-secret derivation failed"
+        );
 
         memset(
             ownX25519Private,
@@ -408,7 +272,6 @@ static bool createSOS(
         return false;
     }
 
-    // Clear X25519 key material that is no longer needed
     memset(
         ownX25519Private,
         0,
@@ -421,21 +284,8 @@ static bool createSOS(
         sizeof(rescueX25519Public)
     );
 
-    // ------------------------------------------------------------------------
-    // Encrypt location + timestamp
-    //
-    // encryptBody() internally:
-    //
-    //   1. Derives encryption key using HKDF
-    //   2. Creates plaintext
-    //   3. Creates ChaChaPoly cipher
-    //   4. Adds authenticated data
-    //   5. Encrypts plaintext
-    //   6. Generates authentication tag
-    // ------------------------------------------------------------------------
-
     if (!encryptBody(
-        SOS_LOCATION,
+        location,
         packet.timestamp_ms,
         sharedSecret,
         packet.origin_root,
@@ -458,19 +308,11 @@ static bool createSOS(
         return false;
     }
 
-    // ------------------------------------------------------------------------
-    // Shared secret no longer needed
-    // ------------------------------------------------------------------------
-
     memset(
         sharedSecret,
         0,
         sizeof(sharedSecret)
     );
-
-    // ------------------------------------------------------------------------
-    // Load our Ed25519 keys
-    // ------------------------------------------------------------------------
 
     uint8_t ownEdPrivate[32];
     uint8_t ownEdPublic[32];
@@ -481,7 +323,7 @@ static bool createSOS(
         32
     )) {
 
-        Serial.println("ERROR: invalid own Ed25519 private key");
+        Serial.println("ERROR: invalid Ed25519 private key");
 
         return false;
     }
@@ -492,7 +334,7 @@ static bool createSOS(
         32
     )) {
 
-        Serial.println("ERROR: invalid own Ed25519 public key");
+        Serial.println("ERROR: invalid Ed25519 public key");
 
         memset(
             ownEdPrivate,
@@ -503,27 +345,11 @@ static bool createSOS(
         return false;
     }
 
-    // ------------------------------------------------------------------------
-    // Sign immutable packet contents
-    //
-    // signDataPacket() deliberately excludes:
-    //
-    //   current_root
-    //   visited_mask
-    //   hop_count
-    //
-    // because these fields change while the packet is relayed.
-    // ------------------------------------------------------------------------
-
     signDataPacket(
         packet,
         ownEdPrivate,
         ownEdPublic
     );
-
-    // ------------------------------------------------------------------------
-    // Clear key material
-    // ------------------------------------------------------------------------
 
     memset(
         ownEdPrivate,
@@ -540,30 +366,51 @@ static bool createSOS(
     return true;
 }
 
-// ============================================================================
-// SEND SOS
-// ============================================================================
-
-static void sendSOS() {
+static void sendSOS(
+    const char *location,
+    const char *locationSource
+) {
 
     if (waitingForAck) {
+        Serial.println("SOS already in progress");
         return;
     }
+
+    uint32_t now = millis();
+
+    if (now - lastSOSRequest < SOS_COOLDOWN_MS) {
+        Serial.println("SOS cooldown active");
+        return;
+    }
+
+    if (location == nullptr ||
+        strlen(location) == 0) {
+
+        location = NODE_LOCATION;
+        locationSource = "NODE";
+    }
+
+    lastSOSRequest = now;
 
     waitingForAck = true;
 
     Serial.println();
     Serial.println("==============================");
-    Serial.println("SOS BUTTON PRESSED");
+    Serial.println("SOS REQUEST RECEIVED");
     Serial.println("==============================");
+
+    Serial.print("Location: ");
+    Serial.println(location);
+
+    Serial.print("Location source: ");
+    Serial.println(locationSource);
 
     MeshPacket packet;
 
-    // ------------------------------------------------------------------------
-    // Create packet
-    // ------------------------------------------------------------------------
-
-    if (!createSOS(packet)) {
+    if (!createSOS(
+        packet,
+        location
+    )) {
 
         Serial.println("Failed to create SOS");
 
@@ -581,10 +428,6 @@ static void sendSOS() {
     Serial.print("Packet size: ");
     Serial.println(sizeof(packet));
 
-    // ------------------------------------------------------------------------
-    // Send with retries
-    // ------------------------------------------------------------------------
-
     for (
         int attempt = 1;
         attempt <= ORIGIN_RETRIES;
@@ -596,15 +439,7 @@ static void sendSOS() {
         Serial.print("/");
         Serial.println(ORIGIN_RETRIES);
 
-        // --------------------------------------------------------------------
-        // transmitData() sends the complete MeshPacket.
-        // --------------------------------------------------------------------
-
         transmitData(packet);
-
-        // --------------------------------------------------------------------
-        // Wait for signed ACK
-        // --------------------------------------------------------------------
 
         if (waitForAck(packet.origin_root)) {
 
@@ -628,10 +463,6 @@ static void sendSOS() {
         Serial.println("No valid ACK received");
     }
 
-    // ------------------------------------------------------------------------
-    // All retries failed
-    // ------------------------------------------------------------------------
-
     Serial.println(
         "SOS delivery failed after retries"
     );
@@ -641,23 +472,104 @@ static void sendSOS() {
     LoRa.receive();
 }
 
-// ============================================================================
-// VERIFY INCOMING DATA PACKET
-// ============================================================================
-//
-// This wrapper avoids a name collision with mesh_common.h's:
-//
-//     verifyDataPacket(packet, publicKey)
-//
-// ============================================================================
+static bool parsePhoneLocation(
+    String body,
+    String &location
+) {
+    int latitudeIndex = body.indexOf("\"latitude\"");
+    int longitudeIndex = body.indexOf("\"longitude\"");
+
+    if (latitudeIndex < 0 ||
+        longitudeIndex < 0) {
+        return false;
+    }
+
+    int latitudeColon = body.indexOf(
+        ':',
+        latitudeIndex
+    );
+
+    int longitudeColon = body.indexOf(
+        ':',
+        longitudeIndex
+    );
+
+    if (latitudeColon < 0 ||
+        longitudeColon < 0) {
+        return false;
+    }
+
+    int latitudeEnd = body.indexOf(
+        ',',
+        latitudeColon
+    );
+
+    if (latitudeEnd < 0) {
+        latitudeEnd = body.indexOf(
+            '}',
+            latitudeColon
+        );
+    }
+
+    int longitudeEnd = body.indexOf(
+        ',',
+        longitudeColon
+    );
+
+    if (longitudeEnd < 0) {
+        longitudeEnd = body.indexOf(
+            '}',
+            longitudeColon
+        );
+    }
+
+    if (latitudeEnd < 0 ||
+        longitudeEnd < 0) {
+        return false;
+    }
+
+    String latitude = body.substring(
+        latitudeColon + 1,
+        latitudeEnd
+    );
+
+    String longitude = body.substring(
+        longitudeColon + 1,
+        longitudeEnd
+    );
+
+    latitude.trim();
+    longitude.trim();
+
+    latitude.replace("\"", "");
+    longitude.replace("\"", "");
+
+    double lat = latitude.toDouble();
+    double lon = longitude.toDouble();
+
+    if (lat < -90.0 ||
+        lat > 90.0 ||
+        lon < -180.0 ||
+        lon > 180.0) {
+        return false;
+    }
+
+    if (lat == 0.0 &&
+        lon == 0.0) {
+        return false;
+    }
+
+    location =
+        latitude +
+        "," +
+        longitude;
+
+    return true;
+}
 
 static bool verifyIncomingDataPacket(
     MeshPacket &packet
 ) {
-    // ------------------------------------------------------------------------
-    // Basic packet validation
-    // ------------------------------------------------------------------------
-
     if (packet.magic != PROTOCOL_MAGIC) {
         return false;
     }
@@ -670,27 +582,15 @@ static bool verifyIncomingDataPacket(
         return false;
     }
 
-    // ------------------------------------------------------------------------
-    // Only accept NODE A / NODE B originated SOS packets
-    // ------------------------------------------------------------------------
-
     if (packet.origin_id != NODE_A_ID &&
         packet.origin_id != NODE_B_ID) {
 
         return false;
     }
 
-    // ------------------------------------------------------------------------
-    // Don't accept our own packet as a relay packet
-    // ------------------------------------------------------------------------
-
     if (packet.origin_id == MY_NODE_ID) {
         return false;
     }
-
-    // ------------------------------------------------------------------------
-    // Find trusted public key for origin
-    // ------------------------------------------------------------------------
 
     uint8_t publicKey[32];
 
@@ -701,13 +601,6 @@ static bool verifyIncomingDataPacket(
         Serial.println("Unknown packet origin");
         return false;
     }
-
-    // ------------------------------------------------------------------------
-    // Verify Ed25519 signature
-    //
-    // mesh_common.h's verifyDataPacket() reconstructs the immutable
-    // SignedData structure before verification.
-    // ------------------------------------------------------------------------
 
     if (!verifyDataPacket(
         packet,
@@ -728,10 +621,6 @@ static bool verifyIncomingDataPacket(
     return true;
 }
 
-// ============================================================================
-// CHECK WHETHER ANOTHER NODE HAS ALREADY RELAYED / ACCEPTED THE MESSAGE
-// ============================================================================
-
 static bool competingPacketHeard(
     uint32_t originRoot
 ) {
@@ -740,10 +629,6 @@ static bool competingPacketHeard(
     if (packetSize <= 0) {
         return false;
     }
-
-    // ------------------------------------------------------------------------
-    // ACK
-    // ------------------------------------------------------------------------
 
     if (packetSize == sizeof(AckPacket)) {
 
@@ -773,10 +658,6 @@ static bool competingPacketHeard(
         return false;
     }
 
-    // ------------------------------------------------------------------------
-    // DATA packet
-    // ------------------------------------------------------------------------
-
     if (packetSize == sizeof(MeshPacket)) {
 
         MeshPacket packet;
@@ -795,8 +676,6 @@ static bool competingPacketHeard(
             packet.type == PACKET_DATA &&
             packet.origin_root == originRoot) {
 
-            // If our bit is already present, this packet has already
-            // passed through this node.
             if (packet.visited_mask & nodeMask(MY_NODE_ID)) {
                 return false;
             }
@@ -811,20 +690,12 @@ static bool competingPacketHeard(
         return false;
     }
 
-    // ------------------------------------------------------------------------
-    // Unknown packet
-    // ------------------------------------------------------------------------
-
     while (LoRa.available()) {
         LoRa.read();
     }
 
     return false;
 }
-
-// ============================================================================
-// RELAY PACKET
-// ============================================================================
 
 static void relayPacket(
     MeshPacket packet,
@@ -851,23 +722,12 @@ static void relayPacket(
     Serial.print("Visited mask: 0x");
     Serial.println(packet.visited_mask, HEX);
 
-    // ------------------------------------------------------------------------
-    // RSSI-based relay delay
-    //
-    // Stronger signal -> shorter delay
-    // Weaker signal   -> longer delay
-    // ------------------------------------------------------------------------
-
     uint32_t relayDelay =
         relayDelayFromRSSI(receivedRSSI);
 
     Serial.print("Relay delay: ");
     Serial.print(relayDelay);
     Serial.println(" ms");
-
-    // ------------------------------------------------------------------------
-    // Listen during relay backoff period
-    // ------------------------------------------------------------------------
 
     LoRa.receive();
 
@@ -889,15 +749,6 @@ static void relayPacket(
         delay(2);
     }
 
-    // ------------------------------------------------------------------------
-    // Update mutable routing information
-    //
-    // IMPORTANT:
-    //
-    // These fields are intentionally NOT re-signed because the signature
-    // only covers immutable origin information.
-    // ------------------------------------------------------------------------
-
     packet.hop_count++;
 
     packet.visited_mask |= nodeMask(MY_NODE_ID);
@@ -907,10 +758,6 @@ static void relayPacket(
             packet.current_root,
             MY_NODE_ID
         );
-
-    // ------------------------------------------------------------------------
-    // Optional hop protection
-    // ------------------------------------------------------------------------
 
     if (packet.hop_count > 8) {
 
@@ -934,19 +781,9 @@ static void relayPacket(
     Serial.print("Visited mask: 0x");
     Serial.println(packet.visited_mask, HEX);
 
-    // ------------------------------------------------------------------------
-    // Send unchanged encrypted payload and signature.
-    //
-    // Only routing fields were modified.
-    // ------------------------------------------------------------------------
-
     transmitData(packet);
 
     Serial.println("SOS relayed");
-
-    // ------------------------------------------------------------------------
-    // ACK origin after successful relay
-    // ------------------------------------------------------------------------
 
     sendAck(
         packet.origin_id,
@@ -957,10 +794,6 @@ static void relayPacket(
     LoRa.receive();
 }
 
-// ============================================================================
-// RECEIVE PACKETS
-// ============================================================================
-
 static void receivePackets() {
 
     int packetSize = LoRa.parsePacket();
@@ -968,13 +801,6 @@ static void receivePackets() {
     if (packetSize <= 0) {
         return;
     }
-
-    // ------------------------------------------------------------------------
-    // ACK packets
-    //
-    // The sender handles its own ACK while waitingForAck.
-    // If we're not waiting, simply ignore it.
-    // ------------------------------------------------------------------------
 
     if (packetSize == sizeof(AckPacket)) {
 
@@ -984,10 +810,6 @@ static void receivePackets() {
 
         return;
     }
-
-    // ------------------------------------------------------------------------
-    // Only accept exact MeshPacket size
-    // ------------------------------------------------------------------------
 
     if (packetSize != sizeof(MeshPacket)) {
 
@@ -1005,10 +827,6 @@ static void receivePackets() {
 
         return;
     }
-
-    // ------------------------------------------------------------------------
-    // Read packet
-    // ------------------------------------------------------------------------
 
     MeshPacket packet;
 
@@ -1030,10 +848,6 @@ static void receivePackets() {
         return;
     }
 
-    // ------------------------------------------------------------------------
-    // Verify cryptographic signature
-    // ------------------------------------------------------------------------
-
     if (!verifyIncomingDataPacket(packet)) {
 
         Serial.println(
@@ -1042,10 +856,6 @@ static void receivePackets() {
 
         return;
     }
-
-    // ------------------------------------------------------------------------
-    // Check whether this node has already seen this packet
-    // ------------------------------------------------------------------------
 
     if (packet.visited_mask & nodeMask(MY_NODE_ID)) {
 
@@ -1056,19 +866,524 @@ static void receivePackets() {
         return;
     }
 
-    // ------------------------------------------------------------------------
-    // Relay
-    // ------------------------------------------------------------------------
-
     relayPacket(
         packet,
         rssi
     );
 }
 
-// ============================================================================
-// SETUP
-// ============================================================================
+const char MAIN_PAGE[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#111111">
+
+<title>Rescue Mesh</title>
+
+<style>
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: #111;
+    color: white;
+    font-family: Arial, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.container {
+    width: 100%;
+    max-width: 430px;
+    padding: 25px;
+    text-align: center;
+}
+
+.logo {
+    font-size: 30px;
+    font-weight: bold;
+    margin-bottom: 8px;
+}
+
+.subtitle {
+    color: #aaa;
+    margin-bottom: 35px;
+}
+
+.sos {
+    width: 230px;
+    height: 230px;
+    border-radius: 50%;
+    border: 8px solid #fff;
+    background: #d60000;
+    color: white;
+    font-size: 32px;
+    font-weight: bold;
+    cursor: pointer;
+    box-shadow: 0 0 30px rgba(255,0,0,0.5);
+}
+
+.sos:active {
+    transform: scale(0.95);
+}
+
+.status {
+    margin-top: 30px;
+    padding: 18px;
+    border-radius: 12px;
+    background: #222;
+}
+
+.connected {
+    color: #00ff88;
+}
+
+.warning {
+    color: #ffcc00;
+}
+
+.success {
+    color: #00ff88;
+}
+
+.error {
+    color: #ff4444;
+}
+
+.location {
+    margin-top: 15px;
+    font-size: 14px;
+    color: #aaa;
+}
+
+.info {
+    margin-top: 20px;
+    color: #888;
+    font-size: 14px;
+}
+
+button:disabled {
+    opacity: 0.5;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+    <div class="logo">
+        RESCUE MESH
+    </div>
+
+    <div class="subtitle">
+        Emergency Communication Node
+    </div>
+
+    <button
+        id="sosButton"
+        class="sos"
+        onclick="sendSOS()">
+        SOS
+    </button>
+
+    <div class="status">
+
+        <div>
+            Node: <b>NODE A</b>
+        </div>
+
+        <div id="connection" class="connected">
+            ESP32 CONNECTED
+        </div>
+
+        <div id="message">
+            Ready
+        </div>
+
+        <div id="location" class="location">
+            Location: checking...
+        </div>
+
+    </div>
+
+    <div class="info">
+        Phone GPS will be used when permission is granted.
+        Otherwise the node's fixed location will be used.
+    </div>
+
+</div>
+
+<script>
+
+function getPhoneLocation() {
+
+    return new Promise((resolve) => {
+
+        if (!navigator.geolocation) {
+            resolve(null);
+            return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+
+            (position) => {
+
+                const latitude =
+                    position.coords.latitude;
+
+                const longitude =
+                    position.coords.longitude;
+
+                if (
+                    typeof latitude !== "number" ||
+                    typeof longitude !== "number" ||
+                    latitude < -90 ||
+                    latitude > 90 ||
+                    longitude < -180 ||
+                    longitude > 180
+                ) {
+                    resolve(null);
+                    return;
+                }
+
+                resolve({
+                    latitude: latitude,
+                    longitude: longitude
+                });
+            },
+
+            () => {
+                resolve(null);
+            },
+
+            {
+                enableHighAccuracy: true,
+                timeout: 7000,
+                maximumAge: 30000
+            }
+        );
+    });
+}
+
+async function sendSOS() {
+
+    const button =
+        document.getElementById("sosButton");
+
+    const message =
+        document.getElementById("message");
+
+    const locationElement =
+        document.getElementById("location");
+
+    button.disabled = true;
+
+    message.innerHTML =
+        '<span class="warning">Getting location...</span>';
+
+    locationElement.innerHTML =
+        "Location: requesting phone GPS...";
+
+    let location = null;
+
+    try {
+        location = await getPhoneLocation();
+    } catch (error) {
+        location = null;
+    }
+
+    let requestBody = {};
+
+    if (location !== null) {
+
+        requestBody = {
+            latitude: location.latitude,
+            longitude: location.longitude
+        };
+
+        locationElement.innerHTML =
+            "Location: phone GPS";
+
+    } else {
+
+        requestBody = {};
+
+        locationElement.innerHTML =
+            "Location: node fallback";
+    }
+
+    message.innerHTML =
+        '<span class="warning">Sending SOS...</span>';
+
+    try {
+
+        const response =
+            await fetch("/api/sos", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(requestBody)
+            });
+
+        const data =
+            await response.json();
+
+        if (data.success) {
+
+            message.innerHTML =
+                '<span class="success">' +
+                data.message +
+                '</span>';
+
+        } else {
+
+            message.innerHTML =
+                '<span class="error">' +
+                data.message +
+                '</span>';
+        }
+
+    } catch (error) {
+
+        message.innerHTML =
+            '<span class="error">' +
+            'Could not communicate with ESP32' +
+            '</span>';
+    }
+
+    setTimeout(() => {
+        button.disabled = false;
+    }, 10000);
+}
+
+</script>
+
+</body>
+</html>
+)rawliteral";
+
+void handleRoot() {
+
+    server.send_P(
+        200,
+        "text/html",
+        MAIN_PAGE
+    );
+}
+
+void handleSOS() {
+
+    uint32_t now = millis();
+
+    if (waitingForAck) {
+
+        server.send(
+            409,
+            "application/json",
+            "{\"success\":false,\"message\":\"SOS already in progress\"}"
+        );
+
+        return;
+    }
+
+    if (now - lastSOSRequest < SOS_COOLDOWN_MS) {
+
+        server.send(
+            429,
+            "application/json",
+            "{\"success\":false,\"message\":\"Please wait before sending another SOS\"}"
+        );
+
+        return;
+    }
+
+    String body = server.arg("plain");
+
+    String phoneLocation;
+
+    bool validPhoneLocation =
+        parsePhoneLocation(
+            body,
+            phoneLocation
+        );
+
+    String selectedLocation;
+
+    const char *locationSource;
+
+    if (validPhoneLocation) {
+
+        selectedLocation = phoneLocation;
+
+        locationSource = "PHONE";
+
+        Serial.println(
+            "Using phone GPS location"
+        );
+
+    } else {
+
+        selectedLocation = NODE_LOCATION;
+
+        locationSource = "NODE";
+
+        Serial.println(
+            "Phone GPS unavailable; using node location"
+        );
+    }
+
+    server.send(
+        200,
+        "application/json",
+        validPhoneLocation
+            ? "{\"success\":true,\"message\":\"SOS accepted using phone GPS\"}"
+            : "{\"success\":true,\"message\":\"SOS accepted using node location\"}"
+    );
+
+    delay(20);
+
+    sendSOS(
+        selectedLocation.c_str(),
+        locationSource
+    );
+}
+
+void handleStatus() {
+
+    String response = "{";
+
+    response += "\"node\":\"NODE_A\",";
+    response += "\"waitingForAck\":";
+    response += waitingForAck ? "true" : "false";
+    response += ",";
+
+    response += "\"wifiClients\":";
+    response += WiFi.softAPgetStationNum();
+    response += ",";
+
+    response += "\"fallbackLocation\":\"";
+    response += NODE_LOCATION;
+    response += "\"";
+
+    response += "}";
+
+    server.send(
+        200,
+        "application/json",
+        response
+    );
+}
+
+void handleNotFound() {
+
+    server.sendHeader(
+        "Location",
+        String("http://") +
+        WiFi.softAPIP().toString(),
+        true
+    );
+
+    server.send(
+        302,
+        "text/plain",
+        ""
+    );
+}
+
+void startCaptivePortal() {
+
+    Serial.println();
+    Serial.println("==============================");
+    Serial.println("STARTING RESCUE MESH WI-FI");
+    Serial.println("==============================");
+
+    WiFi.mode(WIFI_AP);
+
+    WiFi.softAP(
+        WIFI_AP_SSID
+    );
+
+    IPAddress apIP =
+        WiFi.softAPIP();
+
+    Serial.print("Wi-Fi SSID: ");
+    Serial.println(WIFI_AP_SSID);
+
+    Serial.print("Wi-Fi password: NONE");
+    Serial.println();
+
+    Serial.print("ESP32 IP: ");
+    Serial.println(apIP);
+
+    dnsServer.start(
+        DNS_PORT,
+        "*",
+        apIP
+    );
+
+    server.on(
+        "/",
+        HTTP_GET,
+        handleRoot
+    );
+
+    server.on(
+        "/api/sos",
+        HTTP_POST,
+        handleSOS
+    );
+
+    server.on(
+        "/api/status",
+        HTTP_GET,
+        handleStatus
+    );
+
+    server.on(
+        "/generate_204",
+        HTTP_GET,
+        handleRoot
+    );
+
+    server.on(
+        "/hotspot-detect.html",
+        HTTP_GET,
+        handleRoot
+    );
+
+    server.on(
+        "/connecttest.txt",
+        HTTP_GET,
+        handleRoot
+    );
+
+    server.on(
+        "/ncsi.txt",
+        HTTP_GET,
+        handleRoot
+    );
+
+    server.onNotFound(
+        handleNotFound
+    );
+
+    server.begin();
+
+    Serial.println(
+        "Captive portal started"
+    );
+}
 
 void setup() {
 
@@ -1081,33 +1396,24 @@ void setup() {
     Serial.println("RESCUE MESH - NODE A");
     Serial.println("====================================");
 
-    // ------------------------------------------------------------------------
-    // SOS button
-    // ------------------------------------------------------------------------
-
     pinMode(
         SOS_BUTTON_PIN,
         INPUT_PULLUP
     );
 
-    // ------------------------------------------------------------------------
-    // Initialize LoRa
-    //
-    // IMPORTANT:
-    // initLoRa() is void in the supplied mesh_common.h.
-    // It handles LoRa.begin() failure internally.
-    // ------------------------------------------------------------------------
-
     initLoRa();
 
-    // ------------------------------------------------------------------------
-    // Display configuration
-    // ------------------------------------------------------------------------
+    startCaptivePortal();
 
+    Serial.println();
     Serial.println("Role: NORMAL");
 
     Serial.println("Capabilities:");
-    Serial.println("  - SOS sender");
+    Serial.println("  - Physical SOS");
+    Serial.println("  - Wi-Fi SOS");
+    Serial.println("  - Phone GPS SOS");
+    Serial.println("  - Fixed location fallback");
+    Serial.println("  - Captive portal");
     Serial.println("  - SOS relay");
     Serial.println("  - Ed25519 authentication");
     Serial.println("  - X25519 shared secret");
@@ -1118,26 +1424,26 @@ void setup() {
     Serial.print("Node ID: ");
     Serial.println(MY_NODE_ID);
 
+    Serial.print("Fallback location: ");
+    Serial.println(NODE_LOCATION);
+
     Serial.print("Packet size: ");
     Serial.println(sizeof(MeshPacket));
 
     Serial.print("ACK size: ");
     Serial.println(sizeof(AckPacket));
 
+    Serial.println();
     Serial.println("NODE A READY");
 
     LoRa.receive();
 }
 
-// ============================================================================
-// LOOP
-// ============================================================================
-
 void loop() {
 
-    // ------------------------------------------------------------------------
-    // SOS BUTTON
-    // ------------------------------------------------------------------------
+    dnsServer.processNextRequest();
+
+    server.handleClient();
 
     if (digitalRead(SOS_BUTTON_PIN) == LOW) {
 
@@ -1147,20 +1453,20 @@ void loop() {
 
             lastButtonPress = now;
 
-            sendSOS();
+            sendSOS(
+                NODE_LOCATION,
+                "NODE"
+            );
 
-            // Wait until button is released
-            while (digitalRead(SOS_BUTTON_PIN) == LOW) {
+            while (
+                digitalRead(SOS_BUTTON_PIN) == LOW
+            ) {
                 delay(10);
             }
 
             LoRa.receive();
         }
     }
-
-    // ------------------------------------------------------------------------
-    // RECEIVE / RELAY
-    // ------------------------------------------------------------------------
 
     if (!waitingForAck) {
         receivePackets();
