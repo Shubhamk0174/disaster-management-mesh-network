@@ -15,6 +15,20 @@ fn backend_url() -> &'static str {
     option_env!("VITE_BACKEND_URL").unwrap_or("http://localhost:5500")
 }
 
+fn openwa_base_url() -> &'static str {
+    // Expects just the host, e.g. "http://localhost:2785"
+    // The /api/{session}/send-message path is appended in send_whatsapp()
+    option_env!("VITE_OPENWA_URL").unwrap_or("http://localhost:3000")
+}
+
+fn openwa_session() -> &'static str {
+    option_env!("VITE_OPENWA_SESSION").unwrap_or("default")
+}
+
+fn openwa_api_key() -> &'static str {
+    option_env!("VITE_OPENWA_API_KEY").unwrap_or("")
+}
+
 // ─────────────────────────────────────────────
 // Shared state for serial background thread
 // ─────────────────────────────────────────────
@@ -45,6 +59,8 @@ pub struct SaveRescueRequestPayload {
     pub received_at: String,       // ISO-8601
     pub origin_node: String,
     pub location: String,
+    pub mobile: String,
+    pub message: String,
     pub device_timestamp: String,
     pub rssi: Option<i64>,
     pub origin_root: String,
@@ -64,6 +80,8 @@ pub struct DbRescueRequest {
     pub received_at: String,
     pub origin_node: String,
     pub location: String,
+    pub mobile: String,
+    pub message: String,
     pub device_timestamp: String,
     pub rssi: Option<i64>,
     pub origin_root: String,
@@ -171,6 +189,68 @@ async fn load_rescue_requests() -> Result<Vec<DbRescueRequest>, String> {
         .json::<Vec<DbRescueRequest>>()
         .await
         .map_err(|e| format!("Failed to parse response: {}", e))
+}
+
+// ─────────────────────────────────────────────
+// OpenWA / WhatsApp notification
+// ─────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct WhatsAppBody {
+    #[serde(rename = "chatId")]
+    chat_id: String,
+    text: String,
+}
+
+/// Sends a WhatsApp message via the local OpenWA instance.
+/// Config (base_url, session_id, api_key) is passed from the frontend
+/// so it reads from Vite's import.meta.env at runtime, not compile-time.
+///
+/// Endpoint: POST {base_url}/api/sessions/{session_id}/messages/send-text
+#[tauri::command]
+async fn send_whatsapp(
+    base_url: String,
+    session_id: String,
+    api_key: String,
+    mobile: String,
+    text: String,
+) -> Result<(), String> {
+    // Keep digits only (handles numbers with spaces, dashes, +)
+    let digits: String = mobile.chars().filter(|c| c.is_ascii_digit()).collect();
+
+    if digits.is_empty() {
+        return Err("No valid mobile number".into());
+    }
+
+    let chat_id = format!("{}@c.us", digits);
+
+    // Correct OpenWA endpoint (WAHA-style API)
+    let base = base_url.trim_end_matches('/');
+    let url = format!(
+        "{}/api/sessions/{}/messages/send-text",
+        base, session_id
+    );
+
+    let body = WhatsAppBody { chat_id, text };
+
+    let mut req = reqwest::Client::new().post(&url).json(&body);
+
+    if !api_key.is_empty() {
+        req = req.header("X-Api-Key", &api_key);
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("OpenWA request failed: {}", e))?;
+
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        Err(format!("OpenWA {} — {}", status, body_text))
+    }
 }
 
 // ─────────────────────────────────────────────
@@ -295,6 +375,7 @@ pub fn run() {
             save_rescue_request,
             update_rescue_request,
             load_rescue_requests,
+            send_whatsapp,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

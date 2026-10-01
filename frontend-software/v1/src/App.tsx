@@ -28,6 +28,8 @@ interface DbRescueRequest {
   receivedAt: string;
   originNode: string;
   location: string;
+  mobile: string;
+  message: string;
   deviceTimestamp: string;
   rssi: number | null;
   originRoot: string;
@@ -46,6 +48,8 @@ interface RescueRequest {
   receivedAt: number;        // unix ms (from serial event timestamp)
   originNode: string;        // e.g. "NODE_A"
   location: string;
+  mobile: string;            // optional mobile number from SOS sender
+  message: string;           // optional short message from SOS sender
   deviceTimestamp: string;   // e.g. "12345 ms since origin boot"
   rssi: number | null;
   originRoot: string;
@@ -106,6 +110,8 @@ function buildRequest(lines: string[], timestamp: number): RescueRequest {
     receivedAt: timestamp,
     originNode: "UNKNOWN",
     location: "—",
+    mobile: "",
+    message: "",
     deviceTimestamp: "—",
     rssi: null,
     originRoot: "—",
@@ -124,6 +130,8 @@ function buildRequest(lines: string[], timestamp: number): RescueRequest {
 
     if (key === "Origin Node")    req.originNode = val;
     else if (key === "Location")  req.location   = val;
+    else if (key === "Mobile")    req.mobile     = val;
+    else if (key === "Message")   req.message    = val;
     else if (key === "Timestamp") req.deviceTimestamp = val;
     else if (key === "RSSI") {
       const n = parseInt(val, 10);
@@ -157,6 +165,8 @@ function lineClass(line: string): string {
   if (t === "RESCUE MESSAGE RECEIVED") return "text-header";
   if (t.startsWith("Origin Node")
     || t.startsWith("Location")
+    || t.startsWith("Mobile")
+    || t.startsWith("Message")
     || t.startsWith("Timestamp")
     || t.startsWith("RSSI")
     || t.startsWith("Origin Root")
@@ -175,6 +185,8 @@ function isRescueRelated(line: string): boolean {
     || t === "RESCUE MESSAGE RECEIVED"
     || t.startsWith("Origin Node")
     || t.startsWith("Location")
+    || t.startsWith("Mobile")
+    || t.startsWith("Message")
     || t.startsWith("Timestamp")
     || t.startsWith("RSSI")
     || t.startsWith("Origin Root")
@@ -406,6 +418,8 @@ function App() {
           receivedAt: new Date(r.receivedAt).getTime(),
           originNode: r.originNode,
           location: r.location,
+          mobile: r.mobile ?? "",
+          message: r.message ?? "",
           deviceTimestamp: r.deviceTimestamp,
           rssi: r.rssi ?? null,
           originRoot: r.originRoot,
@@ -484,6 +498,8 @@ function App() {
             receivedAt: new Date(req.receivedAt).toISOString(),
             originNode: req.originNode,
             location: req.location,
+            mobile: req.mobile,
+            message: req.message,
             deviceTimestamp: req.deviceTimestamp,
             rssi: req.rssi,
             originRoot: req.originRoot,
@@ -501,6 +517,35 @@ function App() {
             );
           })
           .catch((e) => console.error("[DB] Failed to save rescue request:", e));
+
+        // ── WhatsApp alert via OpenWA ──────────────────────────────
+        if (req.mobile) {
+          const mapsLink = req.location && req.location !== "—"
+            ? `\nhttps://maps.google.com/?q=${encodeURIComponent(req.location)}`
+            : "";
+
+          const waText = [
+            "🚨 *SOS ALERT — Rescue Mesh*",
+            "",
+            `📍 *Location:* ${req.location}${mapsLink}`,
+            req.message ? `💬 *Message:* ${req.message}` : null,
+            `📡 *Node:* ${req.originNode}`,
+            `📶 *RSSI:* ${req.rssi !== null ? `${req.rssi} dBm` : "—"}`,
+            `🕐 *Received:* ${new Date(req.receivedAt).toLocaleTimeString()}`,
+            "",
+            "_Sent by Rescue Mesh Emergency System_",
+          ].filter(Boolean).join("\n");
+
+          invoke("send_whatsapp", {
+            baseUrl:   import.meta.env.VITE_OPENWA_URL   ?? "http://localhost:2785",
+            sessionId: import.meta.env.VITE_OPENWA_SESSION ?? "default",
+            apiKey:    import.meta.env.VITE_OPENWA_API_KEY ?? "",
+            mobile:    req.mobile,
+            text:      waText,
+          })
+            .then(() => console.log(`[WA] Alert sent to ${req.mobile}`))
+            .catch((e) => console.error("[WA] Failed to send WhatsApp:", e));
+        }
       } else {
         ps.pendingLines.push(trimmed);
       }
@@ -1067,6 +1112,22 @@ function RequestCard({ req, onStatusChange, onNotesChange }: RequestCardProps) {
               <span className="field-label">Location</span>
               <span className="field-value location-val">{req.location}</span>
             </div>
+
+            {/* Mobile — shown only when present */}
+            {req.mobile && (
+              <div className="card-field full-width">
+                <span className="field-label">Mobile</span>
+                <span className="field-value">{req.mobile}</span>
+              </div>
+            )}
+
+            {/* Message — shown only when present */}
+            {req.message && (
+              <div className="card-field full-width">
+                <span className="field-label">Message</span>
+                <span className="field-value">{req.message}</span>
+              </div>
+            )}
 
             <div className="card-field">
               <span className="field-label">RSSI</span>

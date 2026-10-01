@@ -26,7 +26,20 @@ DNSServer dnsServer;
 
 bool waitingForAck = false;
 uint32_t lastButtonPress = 0;
-uint32_t lastSOSRequest = 0;
+// Initialize so cooldown is already expired at boot.
+// uint32_t wrap-around: (0 - SOS_COOLDOWN_MS - 1) means
+// millis()-lastSOSRequest >= SOS_COOLDOWN_MS+1 from the very first millis() call.
+uint32_t lastSOSRequest = (uint32_t)(0UL - SOS_COOLDOWN_MS - 1UL);
+
+
+// ── Async SOS state machine ──────────────────────────────────
+bool pendingSOS           = false;
+bool ackReceived          = false;
+bool sosWasSent           = false;   // true once sendSOS() has run at least once
+char pendingLocation[64]  = "";
+char pendingLocSrc[16]    = "";
+char pendingMobile[14]    = "";      // up to 12 digits + null
+char pendingMsg[49]       = "";      // up to 47 chars + null
 
 bool getTrustedEd25519PublicKey(
     uint8_t nodeId,
@@ -192,7 +205,9 @@ static bool waitForAck(
 
 static bool createSOS(
     MeshPacket &packet,
-    const char *location
+    const char *location,
+    const char *mobile,
+    const char *message
 ) {
     memset(&packet, 0, sizeof(packet));
 
@@ -287,6 +302,8 @@ static bool createSOS(
     if (!encryptBody(
         location,
         packet.timestamp_ms,
+        mobile,
+        message,
         sharedSecret,
         packet.origin_root,
         packet.origin_id,
@@ -368,7 +385,9 @@ static bool createSOS(
 
 static void sendSOS(
     const char *location,
-    const char *locationSource
+    const char *locationSource,
+    const char *mobile = "",
+    const char *message = ""
 ) {
 
     if (waitingForAck) {
@@ -405,11 +424,23 @@ static void sendSOS(
     Serial.print("Location source: ");
     Serial.println(locationSource);
 
+    if (mobile && *mobile) {
+        Serial.print("Mobile: ");
+        Serial.println(mobile);
+    }
+
+    if (message && *message) {
+        Serial.print("Message: ");
+        Serial.println(message);
+    }
+
     MeshPacket packet;
 
     if (!createSOS(
         packet,
-        location
+        location,
+        mobile,
+        message
     )) {
 
         Serial.println("Failed to create SOS");
@@ -456,6 +487,7 @@ static void sendSOS(
             );
 
             waitingForAck = false;
+            ackReceived   = true;   // <-- UI will pick this up via polling
 
             return;
         }
@@ -872,6 +904,25 @@ static void receivePackets() {
     );
 }
 
+// ── /api/ack-status handler ─────────────────────────────────
+void handleAckStatus() {
+
+    String response = "{";
+    response += "\"ackReceived\":";
+    response += ackReceived   ? "true" : "false";
+    response += ",\"waitingForAck\":";
+    response += waitingForAck ? "true" : "false";
+    response += ",\"sosWasSent\":";
+    response += sosWasSent    ? "true" : "false";
+    response += "}";
+
+    server.send(
+        200,
+        "application/json",
+        response
+    );
+}
+
 const char MAIN_PAGE[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -973,6 +1024,79 @@ button:disabled {
     opacity: 0.5;
 }
 
+.ack-banner {
+    display: none;
+    margin-top: 20px;
+    padding: 18px;
+    border-radius: 12px;
+    background: #003322;
+    border: 2px solid #00ff88;
+    color: #00ff88;
+    font-size: 18px;
+    font-weight: bold;
+    animation: fadeIn 0.5s ease;
+}
+
+.ack-banner.show {
+    display: block;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-8px); }
+    to   { opacity: 1; transform: translateY(0);    }
+}
+
+.sos.ack-pulse {
+    box-shadow: 0 0 40px rgba(0,255,136,0.7);
+    border-color: #00ff88;
+    background: #006633;
+    transition: all 0.5s ease;
+}
+
+.input-group {
+    margin-top: 20px;
+    text-align: left;
+}
+
+.input-group label {
+    display: block;
+    font-size: 12px;
+    color: #888;
+    margin-bottom: 5px;
+    letter-spacing: 0.5px;
+}
+
+.input-group input,
+.input-group textarea {
+    width: 100%;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 8px;
+    color: #eee;
+    font-size: 14px;
+    padding: 10px 12px;
+    outline: none;
+    font-family: inherit;
+    box-sizing: border-box;
+}
+
+.input-group input:focus,
+.input-group textarea:focus {
+    border-color: #555;
+}
+
+.input-group textarea {
+    resize: none;
+    height: 64px;
+}
+
+.char-count {
+    font-size: 10px;
+    color: #555;
+    text-align: right;
+    margin-top: 3px;
+}
+
 </style>
 
 </head>
@@ -1014,6 +1138,34 @@ button:disabled {
             Location: checking...
         </div>
 
+    </div>
+
+    <div id="ackBanner" class="ack-banner">
+        &#10003; SOS Received by Rescue Node
+    </div>
+
+    <div class="input-group">
+        <label for="mobileInput">Mobile Number (optional)</label>
+        <input
+            id="mobileInput"
+            type="tel"
+            inputmode="numeric"
+            maxlength="12"
+            placeholder="e.g. 919876543210"
+            oninput="updateCount('mobileInput','mobileCount',12)"
+        >
+        <div class="char-count" id="mobileCount">0 / 12</div>
+    </div>
+
+    <div class="input-group">
+        <label for="msgInput">Short Message (optional)</label>
+        <textarea
+            id="msgInput"
+            maxlength="47"
+            placeholder="e.g. Trapped under debris, need medical help"
+            oninput="updateCount('msgInput','msgCount',47)"
+        ></textarea>
+        <div class="char-count" id="msgCount">0 / 47</div>
     </div>
 
     <div class="info">
@@ -1086,6 +1238,12 @@ async function sendSOS() {
     const locationElement =
         document.getElementById("location");
 
+    const mobileVal =
+        document.getElementById("mobileInput").value.trim().replace(/\D/g, "").slice(0, 12);
+
+    const msgVal =
+        document.getElementById("msgInput").value.trim().slice(0, 47);
+
     button.disabled = true;
 
     message.innerHTML =
@@ -1108,7 +1266,9 @@ async function sendSOS() {
 
         requestBody = {
             latitude: location.latitude,
-            longitude: location.longitude
+            longitude: location.longitude,
+            mobile: mobileVal,
+            msg: msgVal
         };
 
         locationElement.innerHTML =
@@ -1116,7 +1276,10 @@ async function sendSOS() {
 
     } else {
 
-        requestBody = {};
+        requestBody = {
+            mobile: mobileVal,
+            msg: msgVal
+        };
 
         locationElement.innerHTML =
             "Location: node fallback";
@@ -1165,6 +1328,71 @@ async function sendSOS() {
     setTimeout(() => {
         button.disabled = false;
     }, 10000);
+
+    // Start polling for ACK as soon as SOS is sent
+    startAckPolling();
+}
+
+function updateCount(inputId, countId, max) {
+    var v = document.getElementById(inputId).value.length;
+    document.getElementById(countId).textContent = v + " / " + max;
+}
+
+// ── ACK polling ─────────────────────────────────────────────
+let ackPollTimer = null;
+
+function startAckPolling() {
+
+    stopAckPolling();
+
+    ackPollTimer = setInterval(async () => {
+
+        try {
+
+            const resp = await fetch("/api/ack-status");
+
+            if (!resp.ok) return;
+
+            const data = await resp.json();
+
+            if (data.ackReceived) {
+
+                showAckBanner();
+                stopAckPolling();
+            }
+
+        } catch (e) {
+            // ESP32 busy — will retry next interval
+        }
+
+    }, 1500);
+}
+
+function stopAckPolling() {
+
+    if (ackPollTimer !== null) {
+        clearInterval(ackPollTimer);
+        ackPollTimer = null;
+    }
+}
+
+function showAckBanner() {
+
+    const banner = document.getElementById("ackBanner");
+    const button = document.getElementById("sosButton");
+    const message = document.getElementById("message");
+
+    banner.classList.add("show");
+    button.classList.add("ack-pulse");
+
+    message.innerHTML =
+        '<span class="success">SOS confirmed by rescue team!</span>';
+
+    // Auto-reset the banner after 30 s so the node stays usable
+    setTimeout(() => {
+        banner.classList.remove("show");
+        button.classList.remove("ack-pulse");
+    }, 30000);
 }
 
 </script>
@@ -1243,19 +1471,68 @@ void handleSOS() {
         );
     }
 
-    server.send(
-        200,
-        "application/json",
-        validPhoneLocation
-            ? "{\"success\":true,\"message\":\"SOS accepted using phone GPS\"}"
-            : "{\"success\":true,\"message\":\"SOS accepted using node location\"}"
+    // Store for async dispatch in loop()
+    selectedLocation.toCharArray(
+        pendingLocation,
+        sizeof(pendingLocation)
     );
 
-    delay(20);
+    strncpy(
+        pendingLocSrc,
+        locationSource,
+        sizeof(pendingLocSrc) - 1
+    );
 
-    sendSOS(
-        selectedLocation.c_str(),
-        locationSource
+    pendingLocSrc[sizeof(pendingLocSrc) - 1] = '\0';
+
+    // Extract optional mobile number (digits only, max 12)
+    memset(pendingMobile, 0, sizeof(pendingMobile));
+    {
+        int mIdx = body.indexOf("\"mobile\"");
+        if (mIdx >= 0) {
+            int colon = body.indexOf(':', mIdx);
+            int q1 = body.indexOf('"', colon + 1);
+            int q2 = (q1 >= 0) ? body.indexOf('"', q1 + 1) : -1;
+            if (q1 >= 0 && q2 > q1) {
+                String mob = body.substring(q1 + 1, q2);
+                mob.trim();
+                // keep digits only
+                String digits = "";
+                for (int i = 0; i < (int)mob.length() && digits.length() < MAX_MOBILE_LEN; i++) {
+                    if (isDigit(mob[i])) digits += mob[i];
+                }
+                digits.toCharArray(pendingMobile, sizeof(pendingMobile));
+            }
+        }
+    }
+
+    // Extract optional message (max 47 chars)
+    memset(pendingMsg, 0, sizeof(pendingMsg));
+    {
+        int mIdx = body.indexOf("\"msg\"");
+        if (mIdx >= 0) {
+            int colon = body.indexOf(':', mIdx);
+            int q1 = body.indexOf('"', colon + 1);
+            int q2 = (q1 >= 0) ? body.indexOf('"', q1 + 1) : -1;
+            if (q1 >= 0 && q2 > q1) {
+                String txt = body.substring(q1 + 1, q2);
+                txt.trim();
+                if ((int)txt.length() > MAX_MSG_LEN) txt = txt.substring(0, MAX_MSG_LEN);
+                txt.toCharArray(pendingMsg, sizeof(pendingMsg));
+            }
+        }
+    }
+
+    ackReceived  = false;  // reset before new SOS
+    sosWasSent   = false;
+    pendingSOS   = true;
+
+    server.send(
+        202,
+        "application/json",
+        validPhoneLocation
+            ? "{\"success\":true,\"message\":\"Sending via LoRa (phone GPS)\"}"
+            : "{\"success\":true,\"message\":\"Sending via LoRa (node location)\"}"
     );
 }
 
@@ -1348,6 +1625,12 @@ void startCaptivePortal() {
         "/api/status",
         HTTP_GET,
         handleStatus
+    );
+
+    server.on(
+        "/api/ack-status",
+        HTTP_GET,
+        handleAckStatus
     );
 
     server.on(
@@ -1466,6 +1749,20 @@ void loop() {
 
             LoRa.receive();
         }
+    }
+
+    // ── Dispatch pending SOS (non-blocking w.r.t. the web server) ──
+    if (pendingSOS && !waitingForAck) {
+
+        pendingSOS = false;
+        sosWasSent = true;
+
+        sendSOS(
+            pendingLocation,
+            pendingLocSrc,
+            pendingMobile,
+            pendingMsg
+        );
     }
 
     if (!waitingForAck) {

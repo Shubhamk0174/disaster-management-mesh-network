@@ -351,6 +351,12 @@ void processPacket()
             plaintext
         );
 
+    char mobile[MAX_MOBILE_LEN + 1];
+    readMobile(plaintext, mobile);
+
+    char userMsg[MAX_MSG_LEN + 1];
+    readMessage(plaintext, userMsg);
+
     memset(
         plaintext,
         0,
@@ -390,6 +396,20 @@ void processPacket()
     Serial.println(
         location
     );
+
+    if (mobile[0] != '\0') {
+        Serial.print(
+            "Mobile      : "
+        );
+        Serial.println(mobile);
+    }
+
+    if (userMsg[0] != '\0') {
+        Serial.print(
+            "Message     : "
+        );
+        Serial.println(userMsg);
+    }
 
     Serial.print(
         "Timestamp   : "

@@ -49,7 +49,14 @@
 #define PACKET_ACK          2
 
 #define MAX_LOCATION_LEN    31
-#define PLAINTEXT_LEN       36
+#define MAX_MOBILE_LEN      12
+#define MAX_MSG_LEN         47
+// Plaintext layout (96 bytes total):
+//   [0..31]  location string (null-padded)
+//   [32..35] timestamp uint32
+//   [36..48] mobile number (12 chars + null)
+//   [49..95] message     (47 chars + null)
+#define PLAINTEXT_LEN       96
 #define NONCE_LEN            12
 #define TAG_LEN              16
 #define SIGNATURE_LEN        64
@@ -418,15 +425,19 @@ inline void generateNonce(
 // PLAINTEXT FORMAT
 // ============================================================
 //
-// 32 bytes location
-//  4 bytes timestamp
+// [0..31]  = location string (null-padded, max 31 chars)
+// [32..35] = timestamp uint32
+// [36..48] = mobile number (null-padded, max 12 digits)
+// [49..95] = message text  (null-padded, max 47 chars)
 //
-// Total = 36 bytes
+// Total = 96 bytes  =>  MeshPacket = 207 bytes (< 255 LoRa limit)
 // ============================================================
 
 inline void createPlaintext(
     const char *location,
     uint32_t timestamp,
+    const char *mobile,
+    const char *message,
     uint8_t plaintext[PLAINTEXT_LEN])
 {
     memset(
@@ -446,6 +457,22 @@ inline void createPlaintext(
         &timestamp,
         sizeof(timestamp)
     );
+
+    if (mobile && *mobile) {
+        strncpy(
+            (char *)plaintext + 36,
+            mobile,
+            MAX_MOBILE_LEN
+        );
+    }
+
+    if (message && *message) {
+        strncpy(
+            (char *)plaintext + 49,
+            message,
+            MAX_MSG_LEN
+        );
+    }
 }
 
 inline uint32_t readTimestamp(
@@ -460,6 +487,22 @@ inline uint32_t readTimestamp(
     );
 
     return timestamp;
+}
+
+inline void readMobile(
+    const uint8_t plaintext[PLAINTEXT_LEN],
+    char out[MAX_MOBILE_LEN + 1])
+{
+    memcpy(out, plaintext + 36, MAX_MOBILE_LEN);
+    out[MAX_MOBILE_LEN] = '\0';
+}
+
+inline void readMessage(
+    const uint8_t plaintext[PLAINTEXT_LEN],
+    char out[MAX_MSG_LEN + 1])
+{
+    memcpy(out, plaintext + 49, MAX_MSG_LEN);
+    out[MAX_MSG_LEN] = '\0';
 }
 
 // ============================================================
@@ -603,6 +646,8 @@ inline bool verifyDataPacket(
 inline bool encryptBody(
     const char *location,
     uint32_t timestamp,
+    const char *mobile,
+    const char *message,
     const uint8_t sharedSecret[32],
     uint32_t originRoot,
     uint8_t originId,
@@ -625,6 +670,8 @@ inline bool encryptBody(
     createPlaintext(
         location,
         timestamp,
+        mobile,
+        message,
         plaintext
     );
 

@@ -94,7 +94,19 @@ DNSServer dnsServer;
 bool waitingForAck = false;
 
 uint32_t lastButtonPress = 0;
-uint32_t lastSOSRequest = 0;
+// Initialize so cooldown is already expired at boot.
+// uint32_t wrap-around: (0 - SOS_COOLDOWN_MS - 1) means
+// millis()-lastSOSRequest >= SOS_COOLDOWN_MS+1 from the very first millis() call.
+uint32_t lastSOSRequest = (uint32_t)(0UL - SOS_COOLDOWN_MS - 1UL);
+
+// ── Async SOS state machine ────────────────────────────────
+bool pendingSOS           = false;
+bool ackReceived          = false;
+bool sosWasSent           = false;
+char pendingLocation[64]  = "";
+char pendingLocSrc[16]    = "";
+char pendingMobile[14]    = "";      // up to 12 digits + null
+char pendingMsg[49]       = "";      // up to 47 chars + null
 
 // ============================================================================
 // TRUSTED ED25519 PUBLIC KEY LOOKUP
@@ -345,7 +357,9 @@ static bool waitForAck(
 
 static bool createSOS(
     MeshPacket &packet,
-    const char *location
+    const char *location,
+    const char *mobile = "",
+    const char *message = ""
 ) {
     memset(
         &packet,
@@ -512,6 +526,8 @@ static bool createSOS(
         !encryptBody(
             location,
             packet.timestamp_ms,
+            mobile,
+            message,
             sharedSecret,
             packet.origin_root,
             packet.origin_id,
@@ -624,7 +640,10 @@ static bool createSOS(
 // ============================================================================
 
 static void sendSOS(
-    const char *location
+    const char *location,
+    const char *locationSource = "NODE",
+    const char *mobile = "",
+    const char *message = ""
 ) {
     if (
         waitingForAck
@@ -677,12 +696,24 @@ static void sendSOS(
         location
     );
 
+    if (mobile && *mobile) {
+        Serial.print("Mobile: ");
+        Serial.println(mobile);
+    }
+
+    if (message && *message) {
+        Serial.print("Message: ");
+        Serial.println(message);
+    }
+
     MeshPacket packet;
 
     if (
         !createSOS(
             packet,
-            location
+            location,
+            mobile,
+            message
         )
     ) {
 
@@ -1378,6 +1409,76 @@ body {
     transform: scale(0.95);
 }
 
+.sos.ack-pulse {
+    box-shadow: 0 0 40px rgba(0,255,136,0.7);
+    border-color: #00ff88;
+    background: #006633;
+    transition: all 0.5s ease;
+}
+
+.ack-banner {
+    display: none;
+    margin-top: 20px;
+    padding: 14px 20px;
+    background: #004422;
+    border: 1px solid #00ff88;
+    border-radius: 12px;
+    color: #00ff88;
+    font-size: 15px;
+    font-weight: bold;
+    text-align: center;
+    animation: fadeIn 0.4s ease;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.input-group {
+    margin-top: 20px;
+    text-align: left;
+}
+
+.input-group label {
+    display: block;
+    font-size: 12px;
+    color: #888;
+    margin-bottom: 5px;
+    letter-spacing: 0.5px;
+}
+
+.input-group input,
+.input-group textarea {
+    width: 100%;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 8px;
+    color: #eee;
+    font-size: 14px;
+    padding: 10px 12px;
+    outline: none;
+    font-family: inherit;
+    box-sizing: border-box;
+}
+
+.input-group input:focus,
+.input-group textarea:focus {
+    border-color: #555;
+}
+
+.input-group textarea {
+    resize: none;
+    height: 64px;
+}
+
+.char-count {
+    font-size: 10px;
+    color: #555;
+    text-align: right;
+    margin-top: 3px;
+}
+
 .status {
     margin-top: 30px;
 
@@ -1471,6 +1572,34 @@ button:disabled {
 
     </div>
 
+    <div id="ackBanner" class="ack-banner">
+        &#10003; SOS Received by Rescue Node
+    </div>
+
+    <div class="input-group">
+        <label for="mobileInput">Mobile Number (optional)</label>
+        <input
+            id="mobileInput"
+            type="tel"
+            inputmode="numeric"
+            maxlength="12"
+            placeholder="e.g. 919876543210"
+            oninput="updateCount('mobileInput','mobileCount',12)"
+        >
+        <div class="char-count" id="mobileCount">0 / 12</div>
+    </div>
+
+    <div class="input-group">
+        <label for="msgInput">Short Message (optional)</label>
+        <textarea
+            id="msgInput"
+            maxlength="47"
+            placeholder="e.g. Trapped under debris, need medical help"
+            oninput="updateCount('msgInput','msgCount',47)"
+        ></textarea>
+        <div class="char-count" id="msgCount">0 / 47</div>
+    </div>
+
     <div class="info">
         Your phone location will be used if you allow location access.
         Otherwise Node B's fixed location will be sent.
@@ -1480,152 +1609,89 @@ button:disabled {
 
 <script>
 
-function getFallbackMessage() {
-
-    document.getElementById("location").innerHTML =
-        "Location: Node B fallback location";
-
+function updateCount(inputId, countId, max) {
+    var v = document.getElementById(inputId).value.length;
+    document.getElementById(countId).textContent = v + " / " + max;
 }
 
 async function sendSOS() {
 
-    const button =
-        document.getElementById("sosButton");
+    const button    = document.getElementById("sosButton");
+    const msgEl     = document.getElementById("message");
+    const locEl     = document.getElementById("location");
 
-    const message =
-        document.getElementById("message");
-
-    const locationElement =
-        document.getElementById("location");
+    const mobileVal = document.getElementById("mobileInput").value.trim().replace(/\D/g, "").slice(0, 12);
+    const msgVal    = document.getElementById("msgInput").value.trim().slice(0, 47);
 
     button.disabled = true;
+    msgEl.innerHTML = '<span class="warning">Getting location...</span>';
 
-    message.innerHTML =
-        '<span class="warning">Getting location...</span>';
+    let location = null;
 
-    let latitude = null;
-    let longitude = null;
-
-    if (
-        "geolocation" in navigator
-    ) {
-
+    if ("geolocation" in navigator) {
         try {
-
-            const position =
-                await new Promise(
-                    (resolve, reject) => {
-
-                        navigator.geolocation.getCurrentPosition(
-                            resolve,
-                            reject,
-                            {
-                                enableHighAccuracy: true,
-                                timeout: 8000,
-                                maximumAge: 30000
-                            }
-                        );
-
-                    }
-                );
-
-            latitude =
-                position.coords.latitude;
-
-            longitude =
-                position.coords.longitude;
-
-            locationElement.innerHTML =
-                "Location: Phone GPS<br>" +
-                latitude.toFixed(6) +
-                "," +
-                longitude.toFixed(6);
-
-        } catch (error) {
-
-            console.log(
-                "Phone GPS unavailable:",
-                error
+            location = await new Promise((resolve, reject) =>
+                navigator.geolocation.getCurrentPosition(resolve, reject,
+                    { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 })
             );
-
-            getFallbackMessage();
-        }
-
-    } else {
-
-        getFallbackMessage();
+        } catch (e) { /* fall through to node location */ }
     }
 
-    message.innerHTML =
-        '<span class="warning">Sending SOS...</span>';
+    msgEl.innerHTML = '<span class="warning">Sending SOS...</span>';
+
+    let requestBody;
+    if (location !== null) {
+        requestBody = {
+            latitude:  location.coords.latitude,
+            longitude: location.coords.longitude,
+            mobile:    mobileVal,
+            msg:       msgVal
+        };
+        locEl.innerHTML = "Location: phone GPS";
+    } else {
+        requestBody = { mobile: mobileVal, msg: msgVal };
+        locEl.innerHTML = "Location: node fallback";
+    }
 
     try {
+        const response = await fetch("/api/sos", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestBody)
+        });
 
-        let url =
-            "/api/sos";
+        const data = await response.json();
+        msgEl.innerHTML = '<span class="' + (data.success ? 'warning' : 'error') + '">' + data.message + '</span>';
 
-        if (
-            latitude !== null &&
-            longitude !== null
-        ) {
-
-            url +=
-                "?lat=" +
-                encodeURIComponent(latitude) +
-                "&lon=" +
-                encodeURIComponent(longitude);
-
-        }
-
-        const response =
-            await fetch(
-                url,
-                {
-                    method: "POST"
-                }
-            );
-
-        const data =
-            await response.json();
-
-        if (
-            data.success
-        ) {
-
-            message.innerHTML =
-                '<span class="success">' +
-                'SOS transmission started' +
-                '</span>';
-
-        } else {
-
-            message.innerHTML =
-                '<span class="error">' +
-                data.message +
-                '</span>';
-        }
-
-    } catch (error) {
-
-        console.log(
-            error
-        );
-
-        message.innerHTML =
-            '<span class="error">' +
-            'Could not communicate with ESP32' +
-            '</span>';
+    } catch (e) {
+        msgEl.innerHTML = '<span class="error">Could not reach ESP32</span>';
     }
 
-    setTimeout(
-        () => {
+    setTimeout(() => { button.disabled = false; }, 10000);
+    startAckPolling();
+}
 
-            button.disabled =
-                false;
+// ACK polling
+let ackPollTimer = null;
 
-        },
-        10000
-    );
+function startAckPolling() {
+    if (ackPollTimer) return;
+    ackPollTimer = setInterval(async () => {
+        try {
+            const r = await fetch("/api/ack-status");
+            const d = await r.json();
+            if (d.ackReceived) {
+                clearInterval(ackPollTimer);
+                ackPollTimer = null;
+                document.getElementById("ackBanner").style.display = "block";
+                const btn = document.getElementById("sosButton");
+                btn.classList.add("ack-pulse");
+                setTimeout(() => btn.classList.remove("ack-pulse"), 4000);
+                document.getElementById("message").innerHTML =
+                    '<span class="success">SOS confirmed by rescue team!</span>';
+            }
+        } catch (e) { /* ignore poll errors */ }
+    }, 1500);
 }
 
 </script>
@@ -1664,167 +1730,142 @@ void handleRoot() {
 // In the second case FALLBACK_LOCATION is used.
 // ============================================================================
 
+// ============================================================================
+// PARSE PHONE LOCATION (from JSON POST body)
+// ============================================================================
+
+static bool parsePhoneLocation(
+    String body,
+    String &location
+) {
+    int latitudeIndex  = body.indexOf("\"latitude\"");
+    int longitudeIndex = body.indexOf("\"longitude\"");
+
+    if (latitudeIndex < 0 || longitudeIndex < 0) return false;
+
+    int latitudeColon  = body.indexOf(':', latitudeIndex);
+    int longitudeColon = body.indexOf(':', longitudeIndex);
+
+    if (latitudeColon < 0 || longitudeColon < 0) return false;
+
+    int latitudeEnd = body.indexOf(',', latitudeColon);
+    if (latitudeEnd < 0) latitudeEnd = body.indexOf('}', latitudeColon);
+
+    int longitudeEnd = body.indexOf(',', longitudeColon);
+    if (longitudeEnd < 0) longitudeEnd = body.indexOf('}', longitudeColon);
+
+    if (latitudeEnd < 0 || longitudeEnd < 0) return false;
+
+    String latitude  = body.substring(latitudeColon  + 1, latitudeEnd);
+    String longitude = body.substring(longitudeColon + 1, longitudeEnd);
+
+    latitude.trim();  longitude.trim();
+    latitude.replace("\"", "");  longitude.replace("\"", "");
+
+    double lat = latitude.toDouble();
+    double lon = longitude.toDouble();
+
+    if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) return false;
+    if (lat == 0.0  && lon == 0.0) return false;
+
+    location = latitude + "," + longitude;
+    return true;
+}
+
+// ============================================================================
+// SOS API
+//
+// POST /api/sos  (JSON body)
+// ============================================================================
+
 void handleSOS() {
 
-    uint32_t now =
-        millis();
+    uint32_t now = millis();
 
-    // ------------------------------------------------------------------------
     // Already processing SOS
-    // ------------------------------------------------------------------------
-
-    if (
-        waitingForAck
-    ) {
-
-        server.send(
-            409,
-            "application/json",
-            "{\"success\":false,\"message\":\"SOS already in progress\"}"
-        );
-
+    if (waitingForAck) {
+        server.send(409, "application/json",
+            "{\"success\":false,\"message\":\"SOS already in progress\"}");
         return;
     }
 
-    // ------------------------------------------------------------------------
-    // Cooldown
-    // ------------------------------------------------------------------------
-
-    if (
-        now - lastSOSRequest <
-        SOS_COOLDOWN_MS
-    ) {
-
-        server.send(
-            429,
-            "application/json",
-            "{\"success\":false,\"message\":\"Please wait before sending another SOS\"}"
-        );
-
+    // Cooldown guard
+    if (now - lastSOSRequest < SOS_COOLDOWN_MS) {
+        server.send(429, "application/json",
+            "{\"success\":false,\"message\":\"Please wait before sending another SOS\"}");
         return;
     }
 
-    // ------------------------------------------------------------------------
-    // Default to hardcoded Node B location
-    // ------------------------------------------------------------------------
+    // Parse JSON body
+    String body = server.arg("plain");
 
-    String sosLocation =
-        String(FALLBACK_LOCATION);
+    // Extract GPS from JSON body
+    String phoneLocation;
+    bool validPhoneLocation = parsePhoneLocation(body, phoneLocation);
 
-    bool phoneLocationUsed =
-        false;
+    String selectedLocation;
+    const char *locationSource;
 
-    // ------------------------------------------------------------------------
-    // Check whether phone sent GPS coordinates
-    // ------------------------------------------------------------------------
+    if (validPhoneLocation) {
+        selectedLocation = phoneLocation;
+        locationSource   = "PHONE";
+        Serial.println("Using phone GPS location");
+    } else {
+        selectedLocation = FALLBACK_LOCATION;
+        locationSource   = "NODE";
+        Serial.println("Phone GPS unavailable; using node location");
+    }
 
-    if (
-        server.hasArg("lat") &&
-        server.hasArg("lon")
-    ) {
+    // Store location for async dispatch
+    selectedLocation.toCharArray(pendingLocation, sizeof(pendingLocation));
+    strncpy(pendingLocSrc, locationSource, sizeof(pendingLocSrc) - 1);
+    pendingLocSrc[sizeof(pendingLocSrc) - 1] = '\0';
 
-        String lat =
-            server.arg("lat");
-
-        String lon =
-            server.arg("lon");
-
-        lat.trim();
-        lon.trim();
-
-        // ------------------------------------------------------------
-        // Basic validation
-        // ------------------------------------------------------------
-
-        if (
-            lat.length() > 0 &&
-            lon.length() > 0 &&
-            lat.length() < 20 &&
-            lon.length() < 20
-        ) {
-
-            float latitude =
-                lat.toFloat();
-
-            float longitude =
-                lon.toFloat();
-
-            if (
-                latitude >= -90.0 &&
-                latitude <= 90.0 &&
-                longitude >= -180.0 &&
-                longitude <= 180.0
-            ) {
-
-                sosLocation =
-                    lat + "," + lon;
-
-                phoneLocationUsed =
-                    true;
+    // Extract optional mobile number (digits only, max 12)
+    memset(pendingMobile, 0, sizeof(pendingMobile));
+    {
+        int mIdx = body.indexOf("\"mobile\"");
+        if (mIdx >= 0) {
+            int colon = body.indexOf(':', mIdx);
+            int q1 = body.indexOf('"', colon + 1);
+            int q2 = (q1 >= 0) ? body.indexOf('"', q1 + 1) : -1;
+            if (q1 >= 0 && q2 > q1) {
+                String mob = body.substring(q1 + 1, q2);
+                mob.trim();
+                String digits = "";
+                for (int i = 0; i < (int)mob.length() && digits.length() < MAX_MOBILE_LEN; i++) {
+                    if (isDigit(mob[i])) digits += mob[i];
+                }
+                digits.toCharArray(pendingMobile, sizeof(pendingMobile));
             }
         }
     }
 
-    // ------------------------------------------------------------------------
-    // Print location source
-    // ------------------------------------------------------------------------
-
-    Serial.println();
-    Serial.println(
-        "=============================="
-    );
-
-    Serial.println(
-        "WI-FI SOS REQUEST"
-    );
-
-    Serial.println(
-        "=============================="
-    );
-
-    if (
-        phoneLocationUsed
-    ) {
-
-        Serial.println(
-            "Location source: PHONE GPS"
-        );
-
-    } else {
-
-        Serial.println(
-            "Location source: NODE B FALLBACK"
-        );
+    // Extract optional message (max 47 chars)
+    memset(pendingMsg, 0, sizeof(pendingMsg));
+    {
+        int mIdx = body.indexOf("\"msg\"");
+        if (mIdx >= 0) {
+            int colon = body.indexOf(':', mIdx);
+            int q1 = body.indexOf('"', colon + 1);
+            int q2 = (q1 >= 0) ? body.indexOf('"', q1 + 1) : -1;
+            if (q1 >= 0 && q2 > q1) {
+                String txt = body.substring(q1 + 1, q2);
+                txt.trim();
+                if ((int)txt.length() > MAX_MSG_LEN) txt = txt.substring(0, MAX_MSG_LEN);
+                txt.toCharArray(pendingMsg, sizeof(pendingMsg));
+            }
+        }
     }
 
-    Serial.print(
-        "Location: "
-    );
+    ackReceived = false;
+    sosWasSent  = false;
+    pendingSOS  = true;
 
-    Serial.println(
-        sosLocation
-    );
-
-    // ------------------------------------------------------------------------
-    // Tell browser request was accepted
-    // ------------------------------------------------------------------------
-
-    server.send(
-        200,
-        "application/json",
-        phoneLocationUsed
-            ? "{\"success\":true,\"message\":\"SOS accepted. Phone GPS location used.\"}"
-            : "{\"success\":true,\"message\":\"SOS accepted. Node fallback location used.\"}"
-    );
-
-    delay(20);
-
-    // ------------------------------------------------------------------------
-    // Send SOS
-    // ------------------------------------------------------------------------
-
-    sendSOS(
-        sosLocation.c_str()
+    server.send(202, "application/json",
+        validPhoneLocation
+            ? "{\"success\":true,\"message\":\"Sending via LoRa (phone GPS)\"}"
+            : "{\"success\":true,\"message\":\"Sending via LoRa (node location)\"}"
     );
 }
 
@@ -1865,6 +1906,22 @@ void handleStatus() {
         "application/json",
         response
     );
+}
+
+// ============================================================================
+// ACK STATUS API — polled by the captive portal JS every 1.5 s
+// ============================================================================
+
+void handleAckStatus() {
+
+    String response = "{";
+    response += "\"ackReceived\":";
+    response += ackReceived ? "true" : "false";
+    response += ",\"sosWasSent\":";
+    response += sosWasSent  ? "true" : "false";
+    response += "}";
+
+    server.send(200, "application/json", response);
 }
 
 // ============================================================================
@@ -1980,6 +2037,12 @@ void startCaptivePortal() {
         "/api/status",
         HTTP_GET,
         handleStatus
+    );
+
+    server.on(
+        "/api/ack-status",
+        HTTP_GET,
+        handleAckStatus
     );
 
     // ------------------------------------------------------------------------
@@ -2265,6 +2328,20 @@ void loop() {
 
             LoRa.receive();
         }
+    }
+
+    // ── Dispatch pending SOS (non-blocking w.r.t. the web server) ──
+    if (pendingSOS && !waitingForAck) {
+
+        pendingSOS = false;
+        sosWasSent = true;
+
+        sendSOS(
+            pendingLocation,
+            pendingLocSrc,
+            pendingMobile,
+            pendingMsg
+        );
     }
 
     // ------------------------------------------------------------------------
