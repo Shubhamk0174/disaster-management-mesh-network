@@ -48,6 +48,20 @@ pub struct SerialDataPayload {
     pub timestamp: u64,
 }
 
+fn default_status() -> String {
+    "unresolved".to_string()
+}
+
+fn resolve_backend_url(custom_url: Option<String>) -> String {
+    if let Some(url) = custom_url {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return trimmed.trim_end_matches('/').to_string();
+        }
+    }
+    backend_url().trim_end_matches('/').to_string()
+}
+
 // ─────────────────────────────────────────────
 // Backend API types
 // ─────────────────────────────────────────────
@@ -59,8 +73,10 @@ pub struct SaveRescueRequestPayload {
     pub received_at: String,       // ISO-8601
     pub origin_node: String,
     pub location: String,
-    pub mobile: String,
-    pub message: String,
+    #[serde(default)]
+    pub mobile: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
     pub device_timestamp: String,
     pub rssi: Option<i64>,
     pub origin_root: String,
@@ -68,8 +84,10 @@ pub struct SaveRescueRequestPayload {
     pub hop_count: Option<i64>,
     pub encryption: String,
     pub auth: String,
+    #[serde(default = "default_status")]
     pub status: String,
-    pub notes: String,
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 /// Record returned by the backend for a RescueRequest row
@@ -80,8 +98,10 @@ pub struct DbRescueRequest {
     pub received_at: String,
     pub origin_node: String,
     pub location: String,
-    pub mobile: String,
-    pub message: String,
+    #[serde(default)]
+    pub mobile: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
     pub device_timestamp: String,
     pub rssi: Option<i64>,
     pub origin_root: String,
@@ -89,9 +109,12 @@ pub struct DbRescueRequest {
     pub hop_count: Option<i64>,
     pub encryption: String,
     pub auth: String,
+    #[serde(default = "default_status")]
     pub status: String,
-    pub notes: String,
-    pub created_at: String,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
 }
 
 /// Payload sent to PATCH /api/rescue-request/:id
@@ -112,9 +135,11 @@ pub struct UpdateRescueRequestPayload {
 #[tauri::command]
 async fn save_rescue_request(
     payload: SaveRescueRequestPayload,
+    backend_url: Option<String>,
 ) -> Result<DbRescueRequest, String> {
     let client = reqwest::Client::new();
-    let url = format!("{}/api/rescue-request", backend_url());
+    let base = resolve_backend_url(backend_url);
+    let url = format!("{}/api/rescue-request", base);
 
     let response = client
         .post(&url)
@@ -129,10 +154,13 @@ async fn save_rescue_request(
         return Err(format!("Backend error {}: {}", status, body));
     }
 
-    response
-        .json::<DbRescueRequest>()
+    let text = response
+        .text()
         .await
-        .map_err(|e| format!("Failed to parse response: {}", e))
+        .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+    serde_json::from_str::<DbRescueRequest>(&text)
+        .map_err(|e| format!("Failed to parse response (body: {}): {}", text, e))
 }
 
 /// PATCHes an existing rescue request's status and/or notes.
@@ -142,9 +170,11 @@ async fn update_rescue_request(
     id: i64,
     status: Option<String>,
     notes: Option<String>,
+    backend_url: Option<String>,
 ) -> Result<DbRescueRequest, String> {
     let client = reqwest::Client::new();
-    let url = format!("{}/api/rescue-request/{}", backend_url(), id);
+    let base = resolve_backend_url(backend_url);
+    let url = format!("{}/api/rescue-request/{}", base, id);
 
     let patch = UpdateRescueRequestPayload { status, notes };
 
@@ -161,17 +191,23 @@ async fn update_rescue_request(
         return Err(format!("Backend error {}: {}", status, body));
     }
 
-    response
-        .json::<DbRescueRequest>()
+    let text = response
+        .text()
         .await
-        .map_err(|e| format!("Failed to parse response: {}", e))
+        .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+    serde_json::from_str::<DbRescueRequest>(&text)
+        .map_err(|e| format!("Failed to parse response (body: {}): {}", text, e))
 }
 
 /// GETs all rescue requests from the backend (ordered by receivedAt asc).
 #[tauri::command]
-async fn load_rescue_requests() -> Result<Vec<DbRescueRequest>, String> {
+async fn load_rescue_requests(
+    backend_url: Option<String>,
+) -> Result<Vec<DbRescueRequest>, String> {
     let client = reqwest::Client::new();
-    let url = format!("{}/api/rescue-request", backend_url());
+    let base = resolve_backend_url(backend_url);
+    let url = format!("{}/api/rescue-request", base);
 
     let response = client
         .get(&url)
@@ -185,10 +221,13 @@ async fn load_rescue_requests() -> Result<Vec<DbRescueRequest>, String> {
         return Err(format!("Backend error {}: {}", status, body));
     }
 
-    response
-        .json::<Vec<DbRescueRequest>>()
+    let text = response
+        .text()
         .await
-        .map_err(|e| format!("Failed to parse response: {}", e))
+        .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+    serde_json::from_str::<Vec<DbRescueRequest>>(&text)
+        .map_err(|e| format!("Failed to parse response (body: {}): {}", text, e))
 }
 
 // ─────────────────────────────────────────────

@@ -28,8 +28,8 @@ interface DbRescueRequest {
   receivedAt: string;
   originNode: string;
   location: string;
-  mobile: string;
-  message: string;
+  mobile?: string | null;
+  message?: string | null;
   deviceTimestamp: string;
   rssi: number | null;
   originRoot: string;
@@ -37,9 +37,9 @@ interface DbRescueRequest {
   hopCount: number | null;
   encryption: string;
   auth: string;
-  status: string;
-  notes: string;
-  createdAt: string;
+  status?: string | null;
+  notes?: string | null;
+  createdAt?: string | null;
 }
 
 interface RescueRequest {
@@ -410,26 +410,33 @@ function App() {
 
   // ── Load rescue history from DB on startup ───────────────────────
   useEffect(() => {
-    invoke<DbRescueRequest[]>("load_rescue_requests")
+    invoke<DbRescueRequest[]>("load_rescue_requests", {
+      backendUrl: import.meta.env.VITE_BACKEND_URL,
+    })
       .then((records) => {
-        const loaded: RescueRequest[] = records.map((r) => ({
-          id: ++globalRequestId,
-          dbId: r.id,
-          receivedAt: new Date(r.receivedAt).getTime(),
-          originNode: r.originNode,
-          location: r.location,
-          mobile: r.mobile ?? "",
-          message: r.message ?? "",
-          deviceTimestamp: r.deviceTimestamp,
-          rssi: r.rssi ?? null,
-          originRoot: r.originRoot,
-          finalRoot: r.finalRoot,
-          hopCount: r.hopCount ?? null,
-          encryption: r.encryption,
-          auth: r.auth,
-          status: r.status as RequestStatus,
-          notes: r.notes,
-        }));
+        // Reverse order so newest requests appear at the top
+        const sorted = [...records].reverse();
+        const loaded: RescueRequest[] = sorted.map((r) => {
+          const parsedTime = new Date(r.receivedAt).getTime();
+          return {
+            id: ++globalRequestId,
+            dbId: r.id,
+            receivedAt: isNaN(parsedTime) ? Date.now() : parsedTime,
+            originNode: r.originNode,
+            location: r.location,
+            mobile: r.mobile ?? "",
+            message: r.message ?? "",
+            deviceTimestamp: r.deviceTimestamp,
+            rssi: r.rssi ?? null,
+            originRoot: r.originRoot,
+            finalRoot: r.finalRoot,
+            hopCount: r.hopCount ?? null,
+            encryption: r.encryption,
+            auth: r.auth,
+            status: (r.status as RequestStatus) || "unresolved",
+            notes: r.notes ?? "",
+          };
+        });
         setRequests(loaded);
       })
       .catch((e) => console.error("[DB] Failed to load rescue requests:", e));
@@ -510,6 +517,7 @@ function App() {
             status: "unresolved",
             notes: "",
           },
+          backendUrl: import.meta.env.VITE_BACKEND_URL,
         })
           .then((saved) => {
             setRequests((prev) =>
@@ -635,7 +643,11 @@ function App() {
       const req = prev.find((r) => r.id === id);
       if (req?.dbId != null) {
         // Immediately PATCH the DB
-        invoke("update_rescue_request", { id: req.dbId, status })
+        invoke("update_rescue_request", {
+          id: req.dbId,
+          status,
+          backendUrl: import.meta.env.VITE_BACKEND_URL,
+        })
           .catch((e) => console.error("[DB] Failed to update status:", e));
       }
       return prev.map((r) => (r.id === id ? { ...r, status } : r));
@@ -650,7 +662,11 @@ function App() {
         // Debounced PATCH — 500 ms after last keystroke
         if (notesDebounceRef.current[id]) clearTimeout(notesDebounceRef.current[id]);
         notesDebounceRef.current[id] = setTimeout(() => {
-          invoke("update_rescue_request", { id: dbId, notes })
+          invoke("update_rescue_request", {
+            id: dbId,
+            notes,
+            backendUrl: import.meta.env.VITE_BACKEND_URL,
+          })
             .catch((e) => console.error("[DB] Failed to update notes:", e));
           delete notesDebounceRef.current[id];
         }, 500);
